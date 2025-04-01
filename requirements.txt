@@ -1,0 +1,8 @@
+biopython
+cupy
+einops
+matplotlib
+mrcfile
+numpy
+pytorch
+scipy
