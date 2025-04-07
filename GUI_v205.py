@@ -20,6 +20,7 @@ from pathlib import Path
 # Only changed the func.py, read_pdb_index_generate_sh_3DEG_local_v34.py and func_check_boundary_for_testing_v7.py
 # changelog ver205
 # Now browse only the specific file extensions.
+# Update the default search version 6034.
 class MyApp(tk.Tk):
 	def __init__(self):
 		super().__init__()
@@ -176,7 +177,7 @@ class MyApp(tk.Tk):
 			tk.Label(panel, text=field).grid(row=idx, column=0, padx=5, pady=5, sticky="w")
 			entry = tk.Entry(panel, width=40)
 			if field == "Search script":
-				entry.insert(0, "/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6033.py")
+				entry.insert(0, "./test1_with_isspa_weight_varingKK_search_translation_also_v6034.py")
 			entry.grid(row=idx, column=1, padx=5, pady=5)
 		#	tk.Button(panel, text="Browse", command=lambda e=entry: open_file_dialog(e)).grid(row=idx, column=2, padx=5, pady=5)
 			tk.Button(panel, text="Browse", command=lambda e=entry, f=field: open_file_dialog(e, f)).grid(row=idx, column=2, padx=5, pady=5)
