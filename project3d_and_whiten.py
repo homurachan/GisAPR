@@ -5,6 +5,10 @@ from typing import Sequence, Tuple
 import torch
 import einops
 import time
+torch.set_num_threads(4)
+# benchmark, in 9800X3D, 8 threads = 20s, 4 threads = 23s, 2 threads = 30s, 16 threads = 20s.
+# So we set num_threads to 4. When many threads come together, they will be much slower.
+
 # Initial version.
 # The extract_central_slices_rfft comes from libtilt team: https://github.com/teamtomo/libtilt
 def create_project3d_parser():
