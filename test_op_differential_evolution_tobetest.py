@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.optimize import differential_evolution
 from scipy.optimize import minimize,Bounds
 import os,sys,argparse,math
 from functools import partial
@@ -19,7 +20,6 @@ from func import func
 # The name of the search script will be fixed. currently the local value is changing, leading to some error.
 # The func is now moving to a seperate file.
 # Add apix_PDB (20250415)
-# Note: Simplex doesn't support multi-threading, so we still use func instead of func_gpuid
 def create_simplex_parser():
 	parser = argparse.ArgumentParser(description="Simplex Refine Execution")
 #	parser.add_argument("--max_workers", type=int, default=3)
@@ -44,7 +44,6 @@ def create_simplex_parser():
 	parser.add_argument("--local_stepsize", type=float, default=30)
 	parser.add_argument("--do_ignoreFSC", action="store_true")
 	parser.add_argument("--yflip", action="store_true")
-	parser.add_argument("--doEnableGpuProj", action='store_true')
 	parser.add_argument("--do_run_CC", action="store_true")
 	parser.add_argument("--do_simple_sum", action="store_true")
 	parser.add_argument("--maskRadius", type=int, default=110)
@@ -146,9 +145,11 @@ def convert_Bounds_to_bounds(args):
 def run_downhill_simplex(x0, func, BOUNDS, options):
 	print("Initial guess: ", options)
 	optimization_history = []
+	result = differential_evolution(func=func, bounds=BOUNDS, workers=3)
+
 	# Run the optimization
 #	result = minimize(func, x0, method='Nelder-Mead', callback=callback, options=options,bounds=BOUNDS)
-	result = minimize(func, x0, method='Nelder-Mead', options=options,bounds=BOUNDS)
+#	result = minimize(func, x0, method='Nelder-Mead', options=options,bounds=BOUNDS)
 	print("Optimal point:", result.x)
 	print("Function value at the optimal point:", result.fun)
 #	print("Optimization history:", optimization_history)

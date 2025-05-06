@@ -23,6 +23,7 @@ IN_BOUNDARY= True
 # Change pdb2mrc_remove_verbose.exe to pdb2mrc_gpu_ver_fp32_v3.py
 # changelog ver8
 # copy pdb2mrc_gpu_ver to here. Now the program will not generate intermediate mrc files.
+# fix when only one chain in the pdb, the min_distance could return an error.
 BLOCKSIZE = 1024
 BLOCKDIM = lambda x : (x - 1) // BLOCKSIZE + 1
 element_data = {
@@ -322,7 +323,10 @@ def main():
 	
 	dist_transform = distance_transform_edt(1 - data_MRC_rotated_chain_Mask)
 	coords2 = np.argwhere(data_MRC_MainBody_Mask == 1)  # Get coordinates of ones in volume2
-	min_distance = float(np.min(dist_transform[tuple(coords2.T)])*apix)  # Minimum distance to volume1
+	try:
+		min_distance = float(np.min(dist_transform[tuple(coords2.T)])*apix)  # Minimum distance to volume1
+	except:
+		min_distance = 0.0
 #	Rotated_MRC.close()
 #	MRC_MainBody.close()
 #	MRC_chain_original.close()
