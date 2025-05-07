@@ -172,7 +172,8 @@ def func_for_PixelSize_search(x, args):
 
 	Step4_Python_Name = "python new_method_to_fit_the_2nd_Gaussian_PEAK_v4.py"
 	Result_File="ReSuLt_"+str(Runid)+".txt"
-	To_Run_Command_Step4=Step4_Python_Name+" "+Step3p1_Index_Name+" "+str(1)+" "+str(0)+" "+Result_File
+	To_Run_Command_Step4=Step4_Python_Name+" "+Step3p1_Index_Name+" "+str(1)+" "+str(1)+" "+Result_File
+	# We only need the simple sum of CC
 	# When searching pixel size, CC and integration is enough.
 	print(To_Run_Command_Step4)
 	os.system(To_Run_Command_Step4)
