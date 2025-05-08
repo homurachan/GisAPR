@@ -487,6 +487,9 @@ if __name__ == "__main__":
 		Additional_params += " --do_simple_sum"
 	if(do_GPU_projection == True):
 		Additional_params += " --doEnableGpuProj"
+		print("Warning! Enable GPU projection is not recommanded for < 32GB graphics memory.")
+		print("It will easily lead to out-of-memory even on RTX 4090")
+		print("")
 	Bounds = "\""+refine_params["Bounds"]+"\""
 	Program_RootName = Path(__file__).resolve().parent
 	General_params_for_CMD = " ".join(f"--{key} {str(value).lower() if isinstance(value, bool) else value}"for key, value in General_params.items()) + Additional_params
