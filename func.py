@@ -15,6 +15,8 @@ from scipy.spatial.transform import Rotation as R
 # add func_gpuid, it reads the gpuid from x, which is a zip object. Called by PSO_v621
 # changelog 20250505
 # update read_pdb_index_generate_sh_3DEG_local_v35.py to read_pdb_index_generate_sh_3DEG_local_v36.py
+# changelog 20250527
+# update to read_pdb_index_generate_sh_3DEG_local_v37.py
 def func_gpuid(x,args):
 	PDB_NAME = args.PDB_NAME
 	STAR_NAME = args.STAR_NAME
@@ -43,6 +45,12 @@ def func_gpuid(x,args):
 	MAX_MinDistance_Allowed = args.MAX_MinDistance_Allowed
 	yflip=args.yflip
 	doEnableGpuProj = args.doEnableGpuProj
+	SplitParticles =1
+	try:
+		SplitParticles = args.SplitParticles
+	except:
+		SplitParticles = 1
+	doSplitDiffGpu = args.doSplitDiffGpu
 	do_run_CC = 1 if (args.do_run_CC) else 0
 	do_simple_sum = 1 if (args.do_simple_sum) else 0
 	rot=x[0][0]
@@ -109,7 +117,7 @@ def func_gpuid(x,args):
 	# 2. PDB2MRC, Generate angle tables and Project the mrc with whitening.
 	# require angle step size. For testing purpose, simple read_pdb_index_generate_sh_3DEG.py is used.
 	
-	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v36.py"
+	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v37.py"
 	Step2_Root_Name="RUN01_"+str(Rotated_PDB_Name)
 	To_Run_Command_Step2=Step2_Python_Name+" --i "+Rotated_PDB_Name+" --o "+Step2_Root_Name+" --searchScript "+search_script\
 	+" --ang "+ang+" --p "+STAR_NAME+" --apix "+str(apix)+" --apix_PDB "+str(apix_PDB)+" --fsc "+fsc_file+" --kk "+str(kk)+" --oriboxsize "+str(boxsize)+" --newboxsize "+str(newboxsize)\
@@ -118,6 +126,9 @@ def func_gpuid(x,args):
 		To_Run_Command_Step2+=" --yflip"
 	if(doEnableGpuProj):
 		To_Run_Command_Step2+=" --doEnableGpuProj"
+	if(doSplitDiffGpu):
+		To_Run_Command_Step2+=" --doSplitDiffGpu"
+	To_Run_Command_Step2+=" --SplitParticles "+str(SplitParticles) 
 	####
 	# gpuid here is problematic.
 	####
@@ -215,6 +226,13 @@ def func(x, args):
 	MAXIUM_ALLOWED_overlapped_pixels = args.MAXIUM_ALLOWED_overlapped_pixels
 	MAX_MinDistance_Allowed = args.MAX_MinDistance_Allowed
 	yflip=args.yflip
+	doEnableGpuProj = args.doEnableGpuProj
+	SplitParticles =1
+	try:
+		SplitParticles = args.SplitParticles
+	except:
+		SplitParticles = 1
+	doSplitDiffGpu = args.doSplitDiffGpu
 	do_run_CC = 1 if (args.do_run_CC) else 0
 	do_simple_sum = 1 if (args.do_simple_sum) else 0
 	rot=x[0]
@@ -280,13 +298,18 @@ def func(x, args):
 	# 2. PDB2MRC, Generate angle tables and Project the mrc with whitening.
 	# require angle step size. For testing purpose, simple read_pdb_index_generate_sh_3DEG.py is used.
 	
-	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v36.py"
+	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v37.py"
 	Step2_Root_Name="RUN01_"+str(Rotated_PDB_Name)
 	To_Run_Command_Step2=Step2_Python_Name+" --i "+Rotated_PDB_Name+" --o "+Step2_Root_Name+" --searchScript "+search_script\
 	+" --ang "+ang+" --p "+STAR_NAME+" --apix "+str(apix)+" --apix_PDB "+str(apix_PDB)+" --fsc "+fsc_file+" --kk "+str(kk)+" --oriboxsize "+str(boxsize)+" --newboxsize "+str(newboxsize)\
 	+" --transRange "+str(transRange)+" --voltage "+str(voltage)+" --cs "+str(cs)+" --psiStep "+str(psiStep)+" --gpuid "+gpuid
 	if(yflip):
 		To_Run_Command_Step2+=" --yflip"
+	if(doEnableGpuProj):
+		To_Run_Command_Step2+=" --doEnableGpuProj"
+	if(doSplitDiffGpu):
+		To_Run_Command_Step2+=" --doSplitDiffGpu"
+	To_Run_Command_Step2+=" --SplitParticles "+str(SplitParticles) 
 	####
 	# gpuid here is problematic.
 	####

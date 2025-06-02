@@ -4,6 +4,8 @@ from scipy.spatial.transform import Rotation as R
 # Initial version. Specificly made for refining the pixel sizes.
 # (20250505)
 # Update read_pdb_index_generate_sh_3DEG_local_v35.py to read_pdb_index_generate_sh_3DEG_local_v36.py
+# (20250527)
+# update to read_pdb_index_generate_sh_3DEG_local_v37.py
 def func_for_PixelSize_search(x, args):
 	PDB_NAME = args.PDB_NAME
 	STAR_NAME = args.STAR_NAME
@@ -32,6 +34,8 @@ def func_for_PixelSize_search(x, args):
 	MAX_MinDistance_Allowed = args.MAX_MinDistance_Allowed
 	yflip=args.yflip
 	doEnableGpuProj = args.doEnableGpuProj
+	SplitParticles = args.SplitParticles
+	doSplitDiffGpu = args.doSplitDiffGpu
 	rot=0.0
 	tilt=0.0
 	psi=0.0
@@ -107,13 +111,18 @@ def func_for_PixelSize_search(x, args):
 	# 2. PDB2MRC, Generate angle tables and Project the mrc with whitening.
 	# require angle step size. For testing purpose, simple read_pdb_index_generate_sh_3DEG.py is used.
 	
-	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v36.py"
+	Step2_Python_Name="python read_pdb_index_generate_sh_3DEG_local_v37.py"
 	Step2_Root_Name="RUN01_"+str(Rotated_PDB_Name)
 	To_Run_Command_Step2=Step2_Python_Name+" --i "+Rotated_PDB_Name+" --o "+Step2_Root_Name+" --searchScript "+search_script\
 	+" --ang "+ang+" --p "+STAR_NAME+" --apix "+str(apix)+" --apix_PDB "+str(apix_PDB)+" --fsc "+fsc_file+" --kk "+str(kk)+" --oriboxsize "+str(boxsize)+" --newboxsize "+str(newboxsize)\
 	+" --transRange "+str(transRange)+" --voltage "+str(voltage)+" --cs "+str(cs)+" --psiStep "+str(psiStep)+" --gpuid "+gpuid
 	if(yflip):
 		To_Run_Command_Step2+=" --yflip"
+	if(doEnableGpuProj):
+		To_Run_Command_Step2+=" --doEnableGpuProj"
+	if(doSplitDiffGpu):
+		To_Run_Command_Step2+=" --doSplitDiffGpu"
+	To_Run_Command_Step2+=" --SplitParticles "+str(SplitParticles) 
 	####
 	# gpuid here is problematic.
 	####
@@ -173,7 +182,6 @@ def func_for_PixelSize_search(x, args):
 	Step4_Python_Name = "python new_method_to_fit_the_2nd_Gaussian_PEAK_v4.py"
 	Result_File="ReSuLt_"+str(Runid)+".txt"
 	To_Run_Command_Step4=Step4_Python_Name+" "+Step3p1_Index_Name+" "+str(1)+" "+str(1)+" "+Result_File
-	# We only need the simple sum of CC
 	# When searching pixel size, CC and integration is enough.
 	print(To_Run_Command_Step4)
 	os.system(To_Run_Command_Step4)

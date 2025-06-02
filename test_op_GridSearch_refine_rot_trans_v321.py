@@ -45,6 +45,8 @@ def create_gridsearch_parser():
 	parser.add_argument("--do_ignoreFSC", action="store_true")
 	parser.add_argument("--yflip", action="store_true")
 	parser.add_argument("--doEnableGpuProj", action='store_true')
+	parser.add_argument("--doSplitDiffGpu", action='store_true', help="If enabled, wrap_to_search will use different gpuid. The inital gpuid is provided by --gpuid. default = False")
+	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
 	parser.add_argument("--do_run_CC", action="store_true")
 	parser.add_argument("--do_simple_sum", action="store_true")
 	parser.add_argument("--maskRadius", type=int, default=110)

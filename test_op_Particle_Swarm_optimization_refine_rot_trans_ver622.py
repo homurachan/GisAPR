@@ -4,7 +4,7 @@ import os, sys
 import argparse
 import concurrent.futures
 from functools import partial
-from func import func,func_gpuid
+from func import func_gpuid
 # changelog ver32
 # add geometric restrain as bias to final values.
 # changelog ver33
@@ -41,6 +41,7 @@ from func import func,func_gpuid
 # Fix gpu only runs on the first device when --gpuid contains more than one device_id.
 # changelog ver622
 # Can run continously by --PSO_continue . Filename --PSO_continue_file --PSO_continue_more_rounds should be entered.
+# (20250527) Add doSplitDiffGpu and SplitParticles
 def create_PSO_parser():
 	parser = argparse.ArgumentParser(description="PSO Parallel Execution")
 	parser.add_argument("--max_workers", type=int, default=3)
@@ -66,6 +67,8 @@ def create_PSO_parser():
 	parser.add_argument("--do_ignoreFSC", action="store_true")
 	parser.add_argument("--yflip", action="store_true")
 	parser.add_argument("--doEnableGpuProj", action='store_true')
+	parser.add_argument("--doSplitDiffGpu", action='store_true', help="If enabled, wrap_to_search will use different gpuid. The inital gpuid is provided by --gpuid. default = False")
+	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
 	parser.add_argument("--do_run_CC", action="store_true")
 	parser.add_argument("--do_simple_sum", action="store_true")
 	parser.add_argument("--maskRadius", type=int, default=110)

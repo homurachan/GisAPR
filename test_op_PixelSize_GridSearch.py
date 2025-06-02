@@ -9,6 +9,7 @@ from func_for_PixelSize_search import func_for_PixelSize_search
 # Initial version
 # This is made from gridsearch. It runs grid search on the pixel sizes.
 # (20250505) Add doEnableGpuProj
+# (20250527) Add doSplitDiffGpu and SplitParticles
 Geo_optimization_history = []
 optimization_history = []
 def create_gridsearch_parser():
@@ -40,6 +41,8 @@ def create_gridsearch_parser():
 	parser.add_argument("--MAXIUM_ALLOWED_overlapped_pixels", type=int, default=9999999999999999)
 	parser.add_argument("--MAX_MinDistance_Allowed", type=float, default=99999999999.)
 	parser.add_argument("--doEnableGpuProj", action='store_true', help="Enable GPU projection. Will consume large amount of device memory. default = False")
+	parser.add_argument("--doSplitDiffGpu", action='store_true', help="If enabled, wrap_to_search will use different gpuid. The inital gpuid is provided by --gpuid. default = False")
+	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
 	# PSO parameters
 	parser.add_argument("--Pixelsize_Bounds", type=str, default="(-0.1,0.1)", help="The search range of the pixel sizes, default = (-0.1,0.1). The actual range adds to apix_PDB")
 	parser.add_argument("--Pixelsize_stepsize", type=float, default=0.01, help="The search stepsize of the pixel sizes, default = 0.01")
