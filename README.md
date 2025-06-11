@@ -21,7 +21,7 @@ You also need to install nvidia-graphics-drivers-570-open from ppa:graphics-driv
 
 # Basic workflow
 
-0. Required files for refinement: One PDB file, One particles starfile (RELION version), One FSC file (Not mandatory).
+0. Required files for refinement: One PDB file, One particle starfile (RELION version), One FSC file (Not mandatory).
 
 1. Make sure the mainbody of your PDB fits the particles. If your particles don't have alignments, you should run a global search for one time. Then reconstruct the map using relion_reconstruct. The fitted PDB can be obtained by "fit in map" in UCSF Chimera/ChimeraX.
 
@@ -37,14 +37,39 @@ You also need to install nvidia-graphics-drivers-570-open from ppa:graphics-driv
 
 7. (Classification) Drop the best particles and re-generate the particle starfile. Goto 4.
 
-# Steps
+# Detailed workflow
 
-1. Run `python generate_healpix_order_and_relion_star.py` to generate angle starfiles.
+# 0. Required files for refinement. Preparation.
+The FSC file can be obtained by converting the RELION postprocess.star using https://github.com/homurachan/GisSPA/blob/main/star_2_fsc_relion311.py
+
+Usage: `star_2_fsc_relion311.py postprocess.star output.fsc`
+
+Your RELION particles should be pre-whitened. You can use https://github.com/homurachan/GisAPR/blob/v209/read_star_shift_crop_and_generate_new_star_v5.py to convert your RELION particles into whitened stacks.
+
+Usage: `read_star_shift_crop_and_generate_new_star_v5.py --star_name particles.star --output_root_name RNDNAME --newboxsize $original_boxsize --batchsize 10000 --dowhitening --doSkipShifting`
+
+Run `read_star_shift_crop_and_generate_new_star_v5.py -h` for details. This program was originally designed for Block-based Reconstruction. If you have lots of RAM, you can choose a larger batchsize.
+
+You also need one starfile that contains the search sampling points. You can run `python generate_healpix_order_and_relion_star.py` to generate angle starfiles.
 
 Example: `python generate_healpix_order_and_relion_star.py --o c1_3deg_rot_removeLzero.star --discardPositiveRot --EQPSangleDegree 3.0 --apix $APIX` , or `python generate_healpix_order_and_relion_star.py -h` for help.
 
-This will produce a starfile called "c1_3deg_rot_removeLzero.star", which stores the angular sampling points of Euler angle ROT and TILT with stepsize of 3.0 degrees.
+This will produce a starfile called "c1_3deg_rot_removeLzero.star", which stores the angular sampling points of Euler angle ROT and TILT with stepsize of 3.0 degrees. The "--discardPositiveRot" drops the rot-angle > 0 deg.
 
-2. Run `python GUI_v209.py` to show the GUI.
+## 1. Make sure the mainbody of your PDB fits the particles.
+
+This package is designed for the template matching results or the single particle datasets. Searching globally is painfully slow. So in practice, we search only within a given range around the particles' orientation, normally 20 ~ 30 deg. Therefore, fitting the PDB to particles should not be a major problem. If you really don't have alignments, You can run the search globally for once or sending the data to RELION/cryoSPARC to get a very rough reconstruction, then fit your PDB to the reconstruction. 
+
+### !!Warning!!
+
+The center of the map must be (nx/2,ny/2,nz/2) in UCSF Chimera. You can reset its center by proc3d in EMAN package: `proc3d input.mrc output.mrc origin=0,0,0`.
+
+## 2. Calibrate the pixel size of your PDB file.
+
+If your PDB sequences are from homogenerous seq and have not been calibrated or real-space refined, then you need to refine the pixel sizes then put it into the GUI.
+
+The program you need is test_op_PixelSize_GridSearch.py . The detailed parameters are very similar to the Grid Refinement. Nevertheless, you need to replace some parameters from Grid Refinement. See part 5. for details.
+
+## 3. Run `python GUI_v209.py` to show the GUI.
 
 To be continued.
