@@ -6,3 +6,5 @@ mrcfile
 numpy
 pytorch
 scipy
+tkinter
+# if tkinter is not installed
