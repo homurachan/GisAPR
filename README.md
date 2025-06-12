@@ -56,6 +56,10 @@ Example: `python generate_healpix_order_and_relion_star.py --o c1_3deg_rot_remov
 
 This will produce a starfile called "c1_3deg_rot_removeLzero.star", which stores the angular sampling points of Euler angle ROT and TILT with stepsize of 3.0 degrees. The "--discardPositiveRot" drops the rot-angle > 0 deg.
 
+For general cases, `python generate_healpix_order_and_relion_star.py --o c1_3deg.star --EQPSangleDegree 3.0 --apix $APIX` is recommended. If the voltage and Cs are not 300.0/2.7, you should change it to the correct values.
+
+### Note: If your particle starfile is RELION v3.1 and after, open your starfile, and replace the first line to (or add this line) "# relion 30001"
+
 ## 1. Make sure the mainbody of your PDB fits the particles.
 
 This package is designed for the template matching results or the single particle datasets. Searching globally is painfully slow. So in practice, we search only within a given range around the particles' orientation, normally 20 ~ 30 deg. Therefore, fitting the PDB to particles should not be a major problem. If you really don't have alignments, You can run the search globally for once or sending the data to RELION/cryoSPARC to get a very rough reconstruction, then fit your PDB to the reconstruction. 
@@ -70,6 +74,11 @@ If your PDB sequences are from homogenerous seq and have not been calibrated or 
 
 The program you need is test_op_PixelSize_GridSearch.py . The detailed parameters are very similar to the Grid Refinement. Nevertheless, you need to replace some parameters from Grid Refinement. See part 5. for details.
 
-## 3. Run `python GUI_v209.py` to show the GUI.
+## 3. Choose the chain identifier. 
 
-To be continued.
+The program can only refine one subunit at a time. Because it regards the subunit as a rigid body, if you want to refine a part of the subunit, you must split the sequence.
+
+## 4. Run the GUI and generate commands.
+
+
+
