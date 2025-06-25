@@ -68,6 +68,10 @@ This package is designed for the template matching results or the single particl
 
 The center of the map must be (nx/2,ny/2,nz/2) in UCSF Chimera. You can reset its center by proc3d in EMAN package: `proc3d input.mrc output.mrc origin=0,0,0`.
 
+If you don't want to install EMAN, I provide a standalone version of proc3d, compiled from EMAN source codes. https://github.com/homurachan/Block-based-recontruction/blob/master/proc3d
+
+When run with `./proc3d` without any argument, it will report a "Fatal Error". Just ignore that, all the functions are working.
+
 ## 2. Calibrate the pixel size of your PDB file.
 
 If your PDB sequences are from homogenerous seq and have not been calibrated or real-space refined, then you need to refine the pixel sizes then put it into the GUI.
