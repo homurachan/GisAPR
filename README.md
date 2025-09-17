@@ -84,5 +84,30 @@ The program can only refine one subunit at a time. Because it regards the subuni
 
 ## 4. Run the GUI and generate commands.
 
+### Remember to click the "submit" button, otherwise the parameters that you entered would not be stored.
 
+### The splash screen
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_1.png" width="700">
 
+### The Input Files panel
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_2.png" width="700">
+
+### The Search Parameters panel
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_3.png" width="700">
+
+### The Refine Parameters panel, Downhill-simplex
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_4.png" width="700">
+
+### The Refine Parameters panel, Particle Swarm Optimization
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_42.png" width="700">
+
+### The Refine Parameters panel, Grid refinement
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_41.png" width="700">
+
+### The Continue Run Parameters panel, working for PSO only
+### Do NOT enter anything here if you don't want to continuously run PSO refinement.
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_5.png" width="700">
+
+### The refinement command will pop out after you close the GUI.
+You just need to copy and run the command.
+<img src="https://github.com/homurachan/GisAPR/blob/v209/Pictures/gisapr_GUI_7.png" width="700">
