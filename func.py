@@ -17,6 +17,10 @@ from scipy.spatial.transform import Rotation as R
 # update read_pdb_index_generate_sh_3DEG_local_v35.py to read_pdb_index_generate_sh_3DEG_local_v36.py
 # changelog 20250527
 # update to read_pdb_index_generate_sh_3DEG_local_v37.py
+# changelog 20251009
+# Now check if the result exists. If true, read the result (Many times the program do the same search because of stepsize)
+# changelog 20251010
+# Try to read x/y/z/shift, in case of only 3-dimensional x.
 def func_gpuid(x,args):
 	PDB_NAME = args.PDB_NAME
 	STAR_NAME = args.STAR_NAME
@@ -56,9 +60,18 @@ def func_gpuid(x,args):
 	rot=x[0][0]
 	tilt=x[0][1]
 	psi=x[0][2]
-	xshift=x[0][3]
-	yshift=x[0][4]
-	zshift=x[0][5]
+	try:
+		xshift=x[0][3]
+	except:
+		xshift=0.0
+	try:
+		yshift=x[0][4]
+	except:
+		yshift=0.0
+	try:
+		zshift=x[0][5]
+	except:
+		zshift=0.0
 	gpuid=x[1]
 	score_in_this_conformation = 9999.
 	def convert_number_to_filename(number):
@@ -141,7 +154,20 @@ def func_gpuid(x,args):
 	print(To_Run_Command_Step2)
 	os.system(To_Run_Command_Step2)
 	# no need to run in parallel here.
-			
+	Runid=Rotated_PDB_Name
+	CCC="ReSuLt_"+str(Runid)+".txt"
+	if os.path.exists(CCC):
+		print(f"Warning, {CCC} exists. Read score from it.")
+		Aa=open(CCC,'r')
+		Result_Line=Aa.readlines()
+		try:
+			Value=float(Result_Line[1].split()[0])
+		except:
+			Value=0.0
+	#	score_in_this_conformation = -1.0*Value+Geometric_restrain_Bias
+		score_in_this_conformation = -1.0*Value
+		return score_in_this_conformation
+	
 	# 2.1. The generated sh file 
 	Search_SUFFIX="_search_script.sh"
 	Gen_PDB_SH = Step2_Root_Name+"_generate_models_from_pdb.sh"
@@ -238,9 +264,18 @@ def func(x, args):
 	rot=x[0]
 	tilt=x[1]
 	psi=x[2]
-	xshift=x[3]
-	yshift=x[4]
-	zshift=x[5]
+	try:
+		xshift=x[3]
+	except:
+		xshift=0.0
+	try:
+		yshift=x[4]
+	except:
+		yshift=0.0
+	try:
+		zshift=x[5]
+	except:
+		zshift=0.0
 	score_in_this_conformation = 9999.
 	def convert_number_to_filename(number):
 		integer_part = int(np.fabs(number))
@@ -322,7 +357,19 @@ def func(x, args):
 	print(To_Run_Command_Step2)
 	os.system(To_Run_Command_Step2)
 	# no need to run in parallel here.
-			
+	Runid=Rotated_PDB_Name
+	CCC="ReSuLt_"+str(Runid)+".txt"
+	if os.path.exists(CCC):
+		print(f"Warning, {CCC} exists. Read score from it.")
+		Aa=open(CCC,'r')
+		Result_Line=Aa.readlines()
+		try:
+			Value=float(Result_Line[1].split()[0])
+		except:
+			Value=0.0
+	#	score_in_this_conformation = -1.0*Value+Geometric_restrain_Bias
+		score_in_this_conformation = -1.0*Value
+		return score_in_this_conformation		
 	# 2.1. The generated sh file 
 	Search_SUFFIX="_search_script.sh"
 	Gen_PDB_SH = Step2_Root_Name+"_generate_models_from_pdb.sh"

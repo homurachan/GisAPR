@@ -2,7 +2,7 @@ import os, sys
 import argparse
 import concurrent.futures
 import subprocess
-
+# set default transRange to 0, set psiStep type to float.
 def create_SEARCH_parser():
 	parser = argparse.ArgumentParser(description="Read search params.")
 	parser.add_argument("--script", type=str, required=True, help="The script file")
@@ -15,14 +15,14 @@ def create_SEARCH_parser():
 	parser.add_argument("--oriboxsize", type=int, default=256, help="The original boxsize, default = 256 (pixel)")
 	parser.add_argument("--newboxsize", type=int, default=256, help="The new boxsize, default = 256 (pixel)")
 	parser.add_argument("--apix", type=float, default=1.42, help="The ORIGINAL pixel size, default = 1.42")
-	parser.add_argument("--transRange", type=int, default=30, help="Translation search range in pixel, default = 30. When set to 0, no translation would be searched.")
+	parser.add_argument("--transRange", type=int, default=0, help="Translation search range in pixel, default = 30. When set to 0, no translation would be searched.")
 	parser.add_argument("--voltage", type=float, default=300, help="The voltage in kV, default = 300")
 	parser.add_argument("--cs", type=float, default=2.7, help="The cc in mm, default = 2.7")
 	parser.add_argument("--maskRadius", type=int, default=110, help="The softmask radius in pixel, corresponding to original boxsize, default = 110")
 	parser.add_argument("--maskEdge", type=int, default=6, help="The softmask edge width in pixel, default = 6")
 	parser.add_argument("--ignoreFSC", action='store_true', help="For testing purpose, ignoring the FSC weight. default = False")
 	parser.add_argument("--discardMask", action='store_true', help="For testing purpose, apply NO soft mask. default = False")
-	parser.add_argument("--psiStep", type=int, default=15, help="The psi angle search step in deg, default = 15")
+	parser.add_argument("--psiStep", type=float, default=15, help="The psi angle search step in deg, default = 15")
 	parser.add_argument("--doLocalSearch", action='store_true', help="Only search for the local orientations. Should combine with --localRange. default = False")
 	parser.add_argument("--localRange", type=float, default=20., help="The local search range in +- this degree. Also applies to psi search.")
 	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
