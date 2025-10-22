@@ -6,3 +6,4 @@ mrcfile
 numpy
 pytorch
 scipy
+tkinker
