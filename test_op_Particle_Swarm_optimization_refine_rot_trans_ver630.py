@@ -224,7 +224,7 @@ class PSO:
 					
 			if(self.do_add_noise_velocities):
 				noise = np.random.normal(0.0, self.sigma, size=self.velocities.shape)
-				self.velocities + = noise
+				self.velocities += noise
 			# Yes, you can replace the -self.positions into a pivot point
 			self.positions += self.velocities
 			# (Optional) callback
