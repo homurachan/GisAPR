@@ -9,6 +9,9 @@ import cupy as cp
 torch.set_num_threads(4)  # Set to your desired number
 # Initial version.
 # The extract_central_slices_rfft comes from libtilt team: https://github.com/teamtomo/libtilt
+# Ver 20260319
+# Adapt normalization into pytorch, 50% faster when using GPU. Now I suggest always using GPU, as this version will run 1deg projection in RTX 4090.
+# The maximum device memory usage is 10GB, a significant improvement.
 def create_project3d_parser():
 	parser = argparse.ArgumentParser(description="Project models from relion angle star then whitening them.")
 	parser.add_argument("--i", type=str, required=True, help="Input model in mrc form.")
@@ -18,6 +21,22 @@ def create_project3d_parser():
 	parser.add_argument("--normal_background_powerspectrum", action='store_true', help="Apply whitening filter to output projections. default = False")
 	parser.add_argument("--gpuid", type=str,default = None, help="The gpuid, only one gpuid should be given. If not given, use CPU.")
 	return parser
+
+def build_radius_map_torch(ysize, xsize, device):
+	y = torch.arange(ysize, device=device, dtype=torch.float32)
+	x = torch.arange(xsize, device=device, dtype=torch.float32)
+	yy, xx = torch.meshgrid(y, x, indexing='ij')
+	cy = ysize // 2
+	cx = xsize // 2
+	dist = torch.round(torch.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)).long()
+	return dist
+
+def build_xy_grid_torch(ysize, xsize, device):
+	y = torch.arange(ysize, device=device, dtype=torch.float32)
+	x = torch.arange(xsize, device=device, dtype=torch.float32)
+	yy, xx = torch.meshgrid(y, x, indexing='ij')
+	return yy, xx
+
 def main():
 	## reading parameters
 	parser = create_project3d_parser()
@@ -114,37 +133,36 @@ def main():
 	dft = torch.fft.fftshift(dft, dim=(-3, -2,))  # actual fftshift of rfft
 
 	stack = np.zeros((len(ROT_list), N, N), dtype = np.float32)
+	radius_map_torch = build_radius_map_torch(N, N, volume.device)
+	xx_torch, yy_torch = build_xy_grid_torch(N, N, volume.device)
 	time0=time.time()
 	
 	for i in range(len(ROT_list)):
 		rotation_matrix = Euler_angles2matrix(ROT_list[i], TILT_list[i], 0.0)
 		rotation_matrix = np.transpose(np.array(rotation_matrix)).astype(np.float32)
-		rotation_matrix = torch.from_numpy(rotation_matrix).reshape(1, 3, 3).clone().detach()
-		rotation_matrix = rotation_matrix.to(device)
+		rotation_matrix = torch.from_numpy(rotation_matrix).reshape(1, 3, 3).to(device)
+
 		projections = extract_central_slices_rfft(
 			dft=dft,
 			image_shape=volume.shape,
 			rotation_matrices=rotation_matrix,
 			rotation_matrix_zyx=False
-		)  # (..., h, w) rfft
+		)
 
-		# transform back to real space
-		projections = torch.fft.ifftshift(projections, dim=(-2,))  # ifftshift of rfft
+		projections = torch.fft.ifftshift(projections, dim=(-2,))
 		projections = torch.fft.irfftn(projections, dim=(-2, -1))
-		projections = torch.fft.ifftshift(projections, dim=(-2, -1))  # recenter real space
-	#	print("projections.dtype = ",projections.dtype)
-		# unpad
+		projections = torch.fft.ifftshift(projections, dim=(-2, -1))
+
 		if pad is True:
 			projections = projections[..., pad_length:-pad_length, pad_length:-pad_length]
-		img = torch.real(projections).cpu().numpy().astype(np.float32)
-		if(whitening):
-			if(do_use_GPU):
-				img_IFT = getSpectrum_divideBySpectrum_cupy(img)
-			else:
-				img_IFT = getSpectrum_divideBySpectrum(img)
-			img = normalize(img_IFT)
-		stack[i,:,:]=img.astype(np.float32)
-		IS_WRITTEN[i]=1
+
+		img = torch.real(projections[0]).to(torch.float32)
+
+		if whitening:
+			img = getSpectrum_divideBySpectrum_torch(img, radius_map=radius_map_torch)
+			img = normalize_torch(img, xx_torch, yy_torch)
+		stack[i, :, :] = img.detach().cpu().numpy()
+		IS_WRITTEN[i] = 1
 	if(stack.dtype!=np.float32):
 		stack=np.array(stack,dtype=np.float32)
 	with mrcfile.new(output_mrcs_filename,overwrite=True) as output_mrcs:
@@ -176,97 +194,104 @@ def main():
 	print("Project3D, total execution time = ",round(time1-time0,4)," seconds")
 ############
 ############
-def getSpectrum_divideBySpectrum(img):
-	img_FFT = np.fft.fftshift(np.fft.fft2(img))
-	xsize=img.shape[-1]
-	ysize=img.shape[-2]
-	center_Y, center_X = ysize // 2, xsize // 2
-	j_coords, i_coords = np.meshgrid(np.arange(ysize), np.arange(xsize), indexing='ij')
-	dist = np.round(np.sqrt((j_coords - center_Y)**2 + (i_coords - center_X)**2)).astype(int)
-	max_radius = dist.max() + 1
-	spectrum = np.bincount(dist.ravel(), weights=np.abs(img_FFT).ravel(), minlength=max_radius)
-	count_freq = np.bincount(dist.ravel(), minlength=max_radius)
-	with np.errstate(divide='ignore', invalid='ignore'):
-		div_spec = np.ones_like(spectrum)
-		nonzero = count_freq > 0
-		div_spec[nonzero] = 1.0 / (spectrum[nonzero] / count_freq[nonzero])
-	div_spec[0] = 1.0
-	img_FFT *= div_spec[dist]
-	img_IFT = np.fft.ifft2(np.fft.ifftshift(img_FFT)).real
-	return img_IFT
 
-def getSpectrum_divideBySpectrum_cupy(img):
-	# Only FFT and IFFT need CPU
-	if(not isinstance(img, cp.ndarray)):
-		img = cp.asarray(img)
-	img_FFT = cp.fft.fftshift(cp.fft.fft2(img))
-	img_FFT = cp.asnumpy(img_FFT)
-	xsize=img.shape[-1]
-	ysize=img.shape[-2]
-	center_Y, center_X = ysize // 2, xsize // 2
-	j_coords, i_coords = np.meshgrid(np.arange(ysize), np.arange(xsize), indexing='ij')
-	dist = np.round(np.sqrt((j_coords - center_Y)**2 + (i_coords - center_X)**2)).astype(int)
-	max_radius = dist.max() + 1
-	spectrum = np.bincount(dist.ravel(), weights=np.abs(img_FFT).ravel(), minlength=max_radius)
-	count_freq = np.bincount(dist.ravel(), minlength=max_radius)
-	with np.errstate(divide='ignore', invalid='ignore'):
-		div_spec = np.ones_like(spectrum)
-		nonzero = count_freq > 0
-		div_spec[nonzero] = 1.0 / (spectrum[nonzero] / count_freq[nonzero])
-	div_spec[0] = 1.0
-	img_FFT *= div_spec[dist]
-	img_FFT = cp.asarray(img_FFT)
-	img_IFT = cp.fft.ifft2(cp.fft.ifftshift(img_FFT)).real
-	img_IFT = cp.asnumpy(img_IFT)
-	return img_IFT
+def getSpectrum_divideBySpectrum_torch(img, radius_map=None):
+	"""
+	img: torch.Tensor, shape (H, W), real-valued
+	return: torch.Tensor, shape (H, W), real-valued
+	"""
+	if img.ndim != 2:
+		raise ValueError("img must be 2D")
 
-def normalize(img):
-	# Only need CPU
-	ysize, xsize = img.shape[-2], img.shape[-1]
-	j_coords, i_coords = np.meshgrid(np.arange(ysize), np.arange(xsize), indexing='ij')
-	points = np.vstack([
-		i_coords.ravel(),
-		j_coords.ravel(),
-		img.ravel(),
-		np.ones_like(img).ravel()
+	device = img.device
+	H, W = img.shape
+
+	if radius_map is None:
+		radius_map = build_radius_map_torch(H, W, device)
+
+	img_FFT = torch.fft.fftshift(torch.fft.fft2(img))
+
+	dist_flat = radius_map.reshape(-1)
+	fft_abs_flat = torch.abs(img_FFT).reshape(-1)
+
+	max_radius = int(radius_map.max().item()) + 1
+
+	spectrum = torch.zeros(max_radius, device=device, dtype=fft_abs_flat.dtype)
+	count_freq = torch.zeros(max_radius, device=device, dtype=fft_abs_flat.dtype)
+
+	spectrum.scatter_add_(0, dist_flat, fft_abs_flat)
+	count_freq.scatter_add_(0, dist_flat, torch.ones_like(fft_abs_flat))
+
+	div_spec = torch.ones_like(spectrum)
+	nonzero = count_freq > 0
+	div_spec[nonzero] = count_freq[nonzero] / spectrum[nonzero]
+	div_spec[0] = 1.0
+
+	img_FFT = img_FFT * div_spec[radius_map]
+	img_IFT = torch.fft.ifft2(torch.fft.ifftshift(img_FFT)).real
+	return img_IFT
+def normalize_torch(img, xx=None, yy=None, eps=1e-12):
+	"""
+	img: (H, W) torch tensor, real
+	xx, yy: meshgrid with indexing='ij'
+			xx should be x-coordinates, yy should be y-coordinates
+	"""
+	if img.ndim != 2:
+		raise ValueError("img must be 2D")
+
+	H, W = img.shape
+	device = img.device
+
+	img64 = img.to(torch.float32)
+
+	if xx is None or yy is None:
+		y = torch.arange(H, device=device, dtype=torch.float32)
+		x = torch.arange(W, device=device, dtype=torch.float32)
+		yy, xx = torch.meshgrid(y, x, indexing='ij')
+	else:
+		xx = xx.to(device=device, dtype=torch.float32)
+		yy = yy.to(device=device, dtype=torch.float32)
+
+	# img = img - (pA * i_coords + pB * j_coords + pC)
+
+	x = xx.reshape(-1)
+	y = yy.reshape(-1)
+	z = img64.reshape(-1)
+	w = torch.ones_like(z, dtype=torch.float32)
+
+	W2 = w * w
+
+	sw2   = torch.sum(W2)
+	sw2x  = torch.sum(W2 * x)
+	sw2y  = torch.sum(W2 * y)
+	sw2z  = torch.sum(W2 * z)
+	sw2xx = torch.sum(W2 * x * x)
+	sw2xy = torch.sum(W2 * x * y)
+	sw2xz = torch.sum(W2 * x * z)
+	sw2yy = torch.sum(W2 * y * y)
+	sw2yz = torch.sum(W2 * y * z)
+
+	A = torch.stack([
+		torch.stack([sw2xx, sw2xy, sw2x]),
+		torch.stack([sw2xy, sw2yy, sw2y]),
+		torch.stack([sw2x,  sw2y,  sw2 ])
 	])
-	pA, pB, pC = fit_least_squares_plane(points)
-	img = img - (pA * i_coords + pB * j_coords + pC)
-	ave, std = calculateAvgStddev(img)
-	if std > 0.0:
-		img = (img - ave) / std
-	return img
-def fit_least_squares_plane(points):
-    x = points[0,:]
-    y = points[1,:]
-    z = points[2,:]
-    w = points[3,:]
-    W2 = w * w
+	b = torch.stack([sw2xz, sw2yz, sw2z])
 
-    D = np.sum(x * x * W2)
-    E = np.sum(x * y * W2)
-    F = np.sum(x * W2)
-    G = np.sum(y * y * W2)
-    H = np.sum(y * W2)
-    I = np.sum(W2)
-    J = np.sum(x * z * W2)
-    K = np.sum(y * z * W2)
-    L = np.sum(z * W2)
+	coeff = torch.linalg.solve(A, b)
+	pA, pB, pC = coeff[0], coeff[1], coeff[2]
 
-    denom = F * F * G - 2 * E * F * H + D * H * H + E * E * I - D * G * I
+	img64 = img64 - (pA * xx + pB * yy + pC)
 
-    plane_a = (H * H * J - G * I * J + E * I * K + F * G * L - H * (F * K + E * L)) / denom
-    plane_b = (E * I * J + F * F * K - D * I * K + D * H * L - F * (H * J + E * L)) / denom
-    plane_c = (F * G * J - E * H * J - E * F * K + D * H * K + E * E * L - D * G * L) / denom
+	ave = img64.mean()
+	std = img64.std(unbiased=False)
 
-    return plane_a, plane_b, plane_c
-def calculateAvgStddev(img):
-	SUM = np.sum(img)
-	SUM2 = np.sum(img*img)
-	n = float(img.shape[-1]*img.shape[-2])
-	ave = SUM / n
-	std = np.sqrt((SUM2 / n) - (ave * ave))
-	return ave,std
+	if std > eps:
+		img64 = (img64 - ave) / std
+	else:
+		img64 = img64 - ave
+	return img64
+
 def fftshift_2d(input: torch.Tensor, rfft: bool):
 	if rfft is False:
 		output = torch.fft.fftshift(input, dim=(-2, -1))
