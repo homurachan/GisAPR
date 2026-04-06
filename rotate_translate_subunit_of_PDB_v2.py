@@ -8,7 +8,7 @@ except:
 from Bio.PDB import PDBParser, PDBIO
 from Bio.PDB.vectors import Vector
 import xpdb
-
+# changelog: Change to rotation vector.
 def main():
 	(pdb_filename, subunit_serial,rot,tilt,psi,xshift,yshift,zshift,output) = parse_command_line()
 	parser = PDBParser(PERMISSIVE=True, structure_builder=xpdb.SloppyStructureBuilder())
@@ -37,7 +37,13 @@ def main():
 	geometric_center = np.mean(coordinates, axis=0)
 #	print("geometric_center of selected chain=",geometric_center)
 	translated_coords = coordinates - geometric_center
-	rotation_matrix=np.asarray(Euler_angles2matrix(rot,tilt, psi))
+#	rotation_matrix=np.asarray(Euler_angles2matrix(rot,tilt, psi))
+	######## Switch to rotvec
+	omega_deg = np.array([rot,tilt,psi])
+	omega_rad = np.deg2rad(omega_deg)
+	rotation_vector = R.from_rotvec(omega_rad)
+	rotation_matrix = rotation_vector.as_matrix()
+	
 	
 	## convert matrix into quaternion below
 	r = R.from_matrix(rotation_matrix)
