@@ -98,12 +98,12 @@ class CTF:
 		retval = np.where(np.abs(retval) < self.dtype(1e-8),
 						  np.sign(retval) * self.dtype(1e-8), retval)
 		return retval
-	#	return retval.astype(np.complex_, copy=False)
+	#	return retval.astype(np.complex64, copy=False)
 	def getFftwImage(self, do_abs=False, do_only_flip_phases=False,
 					 do_intact_until_first_peak=False, do_damping=False):
 		v = self.getCTF(do_abs, do_only_flip_phases,
 						   do_intact_until_first_peak, do_damping)
-		return v.astype(np.complex_, copy=False)
+		return v.astype(np.complex64, copy=False)
 	def getFftwImage_with_isSPA_weight(self, do_abs=False, do_only_flip_phases=False,
 									   do_intact_until_first_peak=False, do_damping=False,
 									   kk=3.0):
@@ -120,7 +120,7 @@ class CTF:
 
 		v = self.getCTF(do_abs, do_only_flip_phases, do_intact_until_first_peak, do_damping)
 		v1 = v * np.sqrt(self.dtype(1.0) / (Ncurve + kk * v * v), dtype=self.dtype)
-		return v1.astype(np.complex_, copy=False)
+		return v1.astype(np.complex64, copy=False)
 
 # add GisSPA weighting. Right above.
 
@@ -130,7 +130,7 @@ class CTF:
 # Usage: ctf1=CTF(dfu,dfv,dfa,cs,voltage,apix,xsize,ysize,ac,bf,scale,ps)
 #ctf_image=ctf1.getFftwImage(False,False,False,False)
 
-#result in np.complex_
+#result in np.complex64
 
 #ctf1=CTF(10000.,5000.,30.)
 #print(ctf1.Axx,ctf1.Ayy)
