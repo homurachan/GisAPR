@@ -12,6 +12,7 @@ torch.set_num_threads(4)  # Set to your desired number
 # Ver 20260319
 # Adapt normalization into pytorch, 50% faster when using GPU. Now I suggest always using GPU, as this version will run 1deg projection in RTX 4090.
 # The maximum device memory usage is 10GB, a significant improvement.
+# remove cupy
 def create_project3d_parser():
 	parser = argparse.ArgumentParser(description="Project models from relion angle star then whitening them.")
 	parser.add_argument("--i", type=str, required=True, help="Input model in mrc form.")
