@@ -203,7 +203,7 @@ def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_
 						towrite+="\t"
 					if(j>=len(instar_line[l].split())-1):
 						towrite+="\n"
-				output_star.write(towrite)
+			#	output_star.write(towrite)
 			else:
 				print("In line ",l,", the projection is broken. Skipping this.")
 	output_star.close()
