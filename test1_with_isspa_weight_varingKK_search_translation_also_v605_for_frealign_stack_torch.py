@@ -12,7 +12,7 @@ except:
 
 from functools import partial
 import concurrent.futures
-from project3d_and_whiten_torch_nowrite import *
+from project3d_and_whiten_cuda_nowrite import *
 import gc
 import torch
 import torch
