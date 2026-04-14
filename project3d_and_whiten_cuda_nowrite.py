@@ -5,7 +5,7 @@ from typing import Sequence, Tuple
 import torch
 import einops
 import time
-import cupy as cp
+#import cupy as cp
 torch.set_num_threads(4)  # Set to your desired number
 # Initial version.
 # The extract_central_slices_rfft comes from libtilt team: https://github.com/teamtomo/libtilt
@@ -64,7 +64,7 @@ def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_
 	do_use_GPU = False
 	if(gpuid != None):
 		device = 'cuda:'+str(gpuid)
-		cp.cuda.Device(gpuid).use()
+	#	cp.cuda.Device(gpuid).use()
 		do_use_GPU = True
 #	output_filename = extract_filename(args.o)
 	output_mrcs_filename = output_filename+".mrcs"
