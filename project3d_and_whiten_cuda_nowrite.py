@@ -13,6 +13,8 @@ torch.set_num_threads(4)  # Set to your desired number
 # Adapt normalization into pytorch, 50% faster when using GPU. Now I suggest always using GPU, as this version will run 1deg projection in RTX 4090.
 # The maximum device memory usage is 10GB, a significant improvement.
 # remove cupy
+# Ver 20260529
+# Reduce memory usage by replacing fftfreq_grid to apply_sinc2_filter_inplace_3d
 def create_project3d_parser():
 	parser = argparse.ArgumentParser(description="Project models from relion angle star then whitening them.")
 	parser.add_argument("--i", type=str, required=True, help="Input model in mrc form.")
@@ -38,36 +40,54 @@ def build_xy_grid_torch(ysize, xsize, device):
 	x = torch.arange(xsize, device=device, dtype=torch.float32)
 	yy, xx = torch.meshgrid(y, x, indexing='ij')
 	return yy, xx
-'''
-def main():
+def apply_sinc2_filter_inplace_3d(volume, z_chunk=8):
+	"""
+	Equivalent to:
+		grid = fftfreq_grid(image_shape=volume.shape, rfft=False,
+		                    fftshift=True, norm=True, device=volume.device)
+		volume = volume * torch.sinc(grid) ** 2
 
-	parser = create_project3d_parser()
-	args = parser.parse_args()
-	output_filename = extract_filename(args.o)
-	particle_star=args.ang
-	mrc_volume = args.i
-	whitening = args.normal_background_powerspectrum
-	do_skip_padding = args.skip_padding
-	do_return_array = args.return_array
-	gpuid=args.gpuid
-	_=run_projection(args)
-'''	
+	But avoids constructing the full (Z, Y, X, 3) frequency grid.
+
+	volume is modified in-place.
+	"""
+	if volume.ndim != 3:
+		raise ValueError("volume must be a 3D tensor")
+
+	device = volume.device
+	D, H, W = volume.shape
+
+	# Match the original behavior: fftfreq + fftshift, rfft=False
+	fz = torch.fft.fftshift(torch.fft.fftfreq(D, device=device, dtype=torch.float32))
+	fy = torch.fft.fftshift(torch.fft.fftfreq(H, device=device, dtype=torch.float32))
+	fx = torch.fft.fftshift(torch.fft.fftfreq(W, device=device, dtype=torch.float32))
+
+	fy2 = fy.view(1, H, 1) ** 2
+	fx2 = fx.view(1, 1, W) ** 2
+
+	with torch.no_grad():
+		for z0 in range(0, D, z_chunk):
+			z1 = min(z0 + z_chunk, D)
+
+			fz2 = fz[z0:z1].view(z1 - z0, 1, 1) ** 2
+			radius = torch.sqrt(fz2 + fy2 + fx2)
+
+			filt = torch.sinc(radius)
+			filt.square_()
+
+			volume[z0:z1].mul_(filt)
+
+			del fz2, radius, filt
+
+	del fz, fy, fx, fy2, fx2
 def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_array,gpuid,output_filename):
 
-#	particle_star=args.ang
-#	mrc_volume = args.i
-#	whitening = args.normal_background_powerspectrum
-#	do_skip_padding = args.skip_padding
-#	do_return_array = args.return_array
-#	gpuid=args.gpuid
 	device = 'cpu'
 	device_for_cupy = None
 	do_use_GPU = False
 	if(gpuid != None):
 		device = 'cuda:'+str(gpuid)
-	#	cp.cuda.Device(gpuid).use()
 		do_use_GPU = True
-#	output_filename = extract_filename(args.o)
 	output_mrcs_filename = output_filename+".mrcs"
 	output_star_filename = output_filename
 	aa=open(particle_star,"r")
@@ -134,6 +154,7 @@ def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_
 	if pad is True:
 		pad_length = volume.shape[-1] // 2
 		volume = torch.nn.functional.pad(volume, pad=[pad_length] * 6, mode='constant', value=0)
+	'''
 	grid = fftfreq_grid(
 		image_shape=volume.shape,
 		rfft=False,
@@ -141,7 +162,8 @@ def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_
 		norm=True,
 		device=volume.device
 	)
-	volume = volume * torch.sinc(grid) ** 2
+	'''
+	apply_sinc2_filter_inplace_3d(volume, z_chunk=8)
 	dft = torch.fft.fftshift(volume, dim=(-3, -2, -1))  # volume center to array origin
 	dft = torch.fft.rfftn(dft, dim=(-3, -2, -1))
 	dft = torch.fft.fftshift(dft, dim=(-3, -2,))  # actual fftshift of rfft
@@ -633,46 +655,39 @@ def sample_dft_3d(
 	dft: torch.Tensor,
 	coordinates: torch.Tensor
 ) -> torch.Tensor:
-	"""Sample a complex volume with linear interpolation.
-
-
-	Parameters
-	----------
-	dft: torch.Tensor
-		`(d, h, w)` complex valued volume.
-	coordinates: torch.Tensor
-		`(..., zyx)` array of coordinates at which `dft` should be sampled.
-		Coordinates should be ordered zyx, aligned with image dimensions `(d, h, w)`.
-		Coordinates should be array coordinates, spanning `[0, N-1]` for a
-		dimension of length N.
-	Returns
-	-------
-	samples: torch.Tensor
-		`(..., )` array of complex valued samples from `dft`.
+	"""
+	Memory-safe version.
+	dft: (D, H, W_rfft), complex
+	coordinates: (..., zyx)
+	return: (...)
 	"""
 	coordinates, ps = einops.pack([coordinates], pattern='* zyx')
 	n_samples = coordinates.shape[0]
 
-	# cannot sample complex tensors directly with grid_sample
-	# c.f. https://github.com/pytorch/pytorch/issues/67634
-	# workaround: treat real and imaginary parts as separate channels
-	dft = einops.rearrange(torch.view_as_real(dft), 'd h w complex -> complex d h w')
-	dft = einops.repeat(dft, 'complex d h w -> b complex d h w', b=n_samples)
-	coordinates = einops.rearrange(coordinates, 'b zyx -> b 1 1 1 zyx')  # b d h w zyx
+	# complex -> two real channels, but DO NOT repeat the volume
+	# input shape for grid_sample: (N, C, D, H, W)
+	dft_real = torch.view_as_real(dft)  # (D, H, W, 2)
+	dft_real = einops.rearrange(dft_real, 'd h w complex -> 1 complex d h w')
+
+	# grid_sample wants grid shape: (N, D_out, H_out, W_out, 3)
+	# Here we use D_out = n_samples, H_out = 1, W_out = 1
+	grid = array_to_grid_sample(coordinates, array_shape=dft.shape[-3:])
+	grid = einops.rearrange(grid, 'b zyx -> 1 b 1 1 zyx')
 
 	samples = torch.nn.functional.grid_sample(
-		input=dft,
-		grid=array_to_grid_sample(coordinates, array_shape=dft.shape[-3:]),
-		mode='bilinear',  # this is trilinear when input is volumetric
-		padding_mode='border',  # this increases sampling fidelity at nyquist
+		input=dft_real,
+		grid=grid,
+		mode='bilinear',
+		padding_mode='border',
 		align_corners=True,
 	)
-	samples = einops.rearrange(samples, 'b complex 1 1 1 -> b complex')
-	samples = torch.view_as_complex(samples.contiguous())  # (b, )
 
-	# pack data back up and return
+	# samples: (1, 2, n_samples, 1, 1)
+	samples = einops.rearrange(samples, '1 complex b 1 1 -> b complex')
+	samples = torch.view_as_complex(samples.contiguous())
+
 	[samples] = einops.unpack(samples, pattern='*', packed_shapes=ps)
-	return samples  # (...)	
+	return samples
 	
 def judge_relion30_or_relion31(inline):
 	trys=3
@@ -752,5 +767,12 @@ def extract_filename(file_path):
 	if len(split_base) > 1:
 		return '.'.join(split_base[:-1])
 	return base
-#if __name__== "__main__":
-#	main()
+'''
+def main():
+	## reading parameters
+	parser = create_project3d_parser()
+	args = parser.parse_args()
+	run_projection(particle_star=args.ang,mrc_volume = args.i,whitening = args.normal_background_powerspectrum,do_skip_padding = args.skip_padding,do_return_array=False,gpuid=args.gpuid,output_filename = extract_filename(args.o))
+if __name__== "__main__":
+	main()
+'''
