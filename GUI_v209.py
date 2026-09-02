@@ -29,6 +29,11 @@ from pathlib import Path
 # Add continue run for PSO. Add option to enable GPU in project3d_and_whiten. Update to read_pdb_index_generate_sh_3DEG_local_v36.py
 # changelog ver209
 # Update to read_pdb_index_generate_sh_3DEG_local_v37.py. Add doSplitDiffGpu and SplitParticles.
+# changelog ver2091
+# Add refine_one_time botton to the left panel. Only refine once using fine sets of templates.
+# You should provide a template starfile.
+# changelog ver2092
+# Add Pattern Search in refine panel.
 class MyApp(tk.Tk):
 	def __init__(self):
 		super().__init__()
@@ -65,17 +70,22 @@ class MyApp(tk.Tk):
 		self.CONTINUE_file_entries={}
 		self.CONTINUE_numeric_vars={}
 		self.CONTINUE_boolean_vars = {}
+		self.ONCE_file_entries={}
+		self.ONCE_numeric_vars={}
+		self.ONCE_boolean_vars = {}
 		# Load existing parameters if available
 		self.input_params = self.load_parameters("input_params.json")
 		self.search_params = self.load_parameters("search_params.json")
 		self.refine_params = self.load_parameters("refine_params.json")
 		self.continue_params = self.load_parameters("continue_params.json")
+		self.once_params = self.load_parameters("once_params.json")
 		# Left panels
 		self.panels = {
 			"Input Files": self.create_InputFiles_panel(),
 			"Search Parameters": self.create_SearchParameters_panel(),
 			"Refine Parameters": self.create_RefineParameters_panel(),
-			"Continue Run Parameters": self.create_ContinueRunParameters_panel()
+			"Continue Run Parameters": self.create_ContinueRunParameters_panel(),
+			"Refine Once Parameters": self.create_OnceParameters_panel()
 		}
 		self.default_panel = tk.Label(self.major_region, text="Welcome! Please select an option from the left.", font=("Arial", 14))
 		self.default_panel.pack(expand=True)
@@ -101,7 +111,8 @@ class MyApp(tk.Tk):
 		buttons = [("Input Files", "lightblue"),
 		("Search Parameters", "lightblue"), 
 		("Refine Parameters", "lightblue"), 
-		("Continue Run Parameters", "lightcoral")]
+		("Continue Run Parameters", "lightcoral"),
+		("Refine Once Parameters", "lightblue")]
 		for text, color in buttons:
 		#	btn = tk.Button(self.left_frame, text=text, bg=color, fg="blue", font=("Arial", 10))
 			btn = tk.Button(self.left_frame, text=text, bg=color, fg="blue", font=("Arial", 10), 
@@ -275,6 +286,77 @@ class MyApp(tk.Tk):
 		submit_btn.grid(row=row_index, column=0, columnspan=3, pady=10)
 		
 		return panel
+	def create_OnceParameters_panel(self):
+		panel = tk.Frame(self.major_region, bg="white")
+
+		def open_file_dialog(entry_widget, field):
+			# Filetype filters for each field
+			extension_map = {
+				"Search script": [("Python files","*.py")],
+				"Particle Star file": [("STAR files", "*.star")],
+				"Template Star file": [("STAR files", "*.star")],
+				"FSC file": [("FSC files", "*.fsc")],
+				
+			}
+			
+			# Append the "All files" option to every field
+			filetypes = extension_map.get(field, []) + [("All files", "*.*")]
+			
+			filename = filedialog.askopenfilename(
+				title=f"Select {field}",
+				filetypes=filetypes
+			)
+			
+			if filename:
+				entry_widget.delete(0, tk.END)
+				entry_widget.insert(0, filename)
+		
+		fields = ["Search script","Particle Star file", "Template Star file", "FSC file"]
+		for idx, field in enumerate(fields):
+			tk.Label(panel, text=field).grid(row=idx, column=0, padx=5, pady=5, sticky="w")
+			entry = tk.Entry(panel, width=40)
+			entry.insert(0, self.input_params.get(field, ""))  # Load saved value if exists
+			entry.grid(row=idx, column=1, padx=5, pady=5)
+		#	tk.Button(panel, text="Browse", command=lambda e=entry: open_file_dialog(e)).grid(row=idx, column=2, padx=5, pady=5)
+			tk.Button(panel, text="Browse", command=lambda e=entry, f=field: open_file_dialog(e, f)).grid(row=idx, column=2, padx=5, pady=5)
+
+			self.ONCE_file_entries[field] = entry
+		row_index = len(fields)
+		additional_fields = {
+			"Output root name": tk.StringVar(value=self.once_params.get("Output root name", "default_name_")),
+			"Boxsize": tk.IntVar(value=self.once_params.get("Boxsize", 256)),
+			"Particle Apix": tk.DoubleVar(value=self.once_params.get("Particle Apix", 1.00)),
+			"Voltage": tk.DoubleVar(value=self.once_params.get("Voltage", 300)),
+			"Cs": tk.DoubleVar(value=self.once_params.get("Cs", 2.7)),
+			"Search in-plane rotation step in deg": tk.DoubleVar(value=self.once_params.get("Search in-plane rotation step in deg", 1.0)),
+			"Local Search Range in deg": tk.IntVar(value=self.once_params.get("Local Search Range in deg", 12)),
+			"Search boxsize in pixel": tk.IntVar(value=self.once_params.get("Search boxsize in pixel", 160)),
+			"Mask Radius in pixel": tk.IntVar(value=self.once_params.get("Mask Radius in pixel", 110)),
+			"Mask Soft Edge in pixel": tk.IntVar(value=self.once_params.get("Mask Soft Edge in pixel", 6)),
+			"isSPA n": tk.IntVar(value=self.once_params.get("isSPA n", 3)),
+			"Split particle starfile in these parts": tk.IntVar(value=self.once_params.get("Split particle starfile in these parts", 1)),
+			"gpuid": tk.StringVar(value=self.once_params.get("gpuid", "0")),
+		}
+		
+		for idx, (field, var_type) in enumerate(additional_fields.items(), start=len(fields)):
+			tk.Label(panel, text=field).grid(row=idx, column=0, padx=5, pady=5, sticky="w")
+			entry = tk.Entry(panel, textvariable=var_type, width=40)
+			entry.grid(row=idx, column=1, padx=5, pady=5)
+			self.ONCE_file_entries[field] = var_type
+			row_index+=1
+		boolean_fields1 = {
+			"Do run split particle starfile in diff GPUs": tk.BooleanVar(value=self.once_params.get("Do run split particle starfile in diff GPUs", False))
+		}
+		for field, var in boolean_fields1.items():
+			tk.Label(panel, text=field).grid(row=row_index, column=0, padx=5, pady=4, sticky="w")
+			self.ONCE_boolean_vars[field] = var
+			tk.Checkbutton(panel, variable=var).grid(row=row_index, column=1, padx=5, pady=4)
+			row_index += 1
+		# Submit button
+		submit_btn = tk.Button(panel, text="Submit your input parameters", command=self.get_ONCE_parameters)
+		submit_btn.grid(row=row_index, column=0, columnspan=3, pady=10)
+		
+		return panel
 	def create_RefineParameters_panel(self):
 		panel = tk.Frame(self.major_region, bg="white")
 		
@@ -300,7 +382,7 @@ class MyApp(tk.Tk):
 		tk.Label(panel, text="Optimization Algorithm").grid(row=row_index, column=0, padx=5, pady=5, sticky="w")
 		self.refine_vars["algorithm"] = tk.StringVar(value="Simplex")
 		algo_combobox = ttk.Combobox(panel, textvariable=self.refine_vars["algorithm"], 
-					 values=["Grid Search", "Simplex", "Particle Swarm Optimization (PSO)"])
+					 values=["Grid Search", "Simplex", "Particle Swarm Optimization (PSO)","Pattern search"])
 		algo_combobox.grid(row=row_index, column=1, padx=5, pady=5)
 		algo_combobox.bind("<<ComboboxSelected>>", lambda event: self.update_exclusive_params(event))
 		row_index += 1
@@ -312,7 +394,7 @@ class MyApp(tk.Tk):
 		self.exclusive_frames["Grid Search"] = self.create_grid_search_params(self.exclusive_frame)
 		self.exclusive_frames["Simplex"] = self.create_simplex_params(self.exclusive_frame)
 		self.exclusive_frames["Particle Swarm Optimization (PSO)"] = self.create_pso_params(self.exclusive_frame)
-		
+		self.exclusive_frames["Pattern search"] = self.create_pattern_params(self.exclusive_frame)
 		# Show default selection
 		self.update_exclusive_params(None)
 		
@@ -373,6 +455,23 @@ class MyApp(tk.Tk):
 			tk.Label(frame, text=param).grid(row=idx, column=0, padx=5, pady=5, sticky="w")
 			tk.Entry(frame, textvariable=var, width=40).grid(row=idx, column=1, padx=5, pady=5)
 		return frame
+	def create_pattern_params(self, parent):
+		frame = tk.Frame(parent, bg="white")
+		params = {
+			"Pattern give initial position": tk.BooleanVar(value=self.refine_params.get("Pattern give initial position", False)),
+			"Pattern initial point": tk.StringVar(value=self.refine_params.get("Pattern initial point", "[10,10,10,5,5,5]")),
+			"Pattern stepsize": tk.DoubleVar(value=self.refine_params.get("Pattern stepsize", 2.0)),
+			"Pattern tolerance": tk.DoubleVar(value=self.refine_params.get("Pattern tolerance", 0.01)),
+			"Pattern shrink eff": tk.DoubleVar(value=self.refine_params.get("Pattern shrink eff", 0.6)),
+			"Pattern expand eff": tk.DoubleVar(value=self.refine_params.get("Pattern expand eff", 1.05)),
+			"Pattern Maximum iterations": tk.IntVar(value=self.refine_params.get("Pattern Maximum iterations", 500))
+		}
+		self.exclusive_vars["Pattern search"] = params
+		for idx, (param, var) in enumerate(params.items()):
+			tk.Label(frame, text=param).grid(row=idx, column=0, padx=5, pady=5, sticky="w")
+
+			tk.Entry(frame, textvariable=var, width=40).grid(row=idx, column=1, padx=5, pady=5)
+		return frame
 	def save_parameters(self, filename, data):
 		"""Save dictionary data to a JSON file."""
 		with open(filename, "w") as f:
@@ -397,6 +496,12 @@ class MyApp(tk.Tk):
 		inputs.update({key: var.get() for key, var in self.CONTINUE_boolean_vars.items()})
 		print("Continue Parameters:", inputs)
 		self.save_parameters("continue_params.json", inputs)
+	def get_ONCE_parameters(self):
+		inputs = {key: entry.get() for key, entry in self.ONCE_file_entries.items()}
+		inputs.update({key: var.get() for key, var in self.ONCE_numeric_vars.items()})
+		inputs.update({key: var.get() for key, var in self.ONCE_boolean_vars.items()})
+		print("Refine Once Parameters:", inputs)
+		self.save_parameters("once_params.json", inputs)
 	def get_inputs(self):
 		inputs = {key: entry.get() for key, entry in self.INPUT_file_entries.items()}
 		inputs.update({key: var.get() for key, var in self.INPUT_numeric_vars.items()})
@@ -423,9 +528,65 @@ def load_continue_parameters(filename):
 	except FileNotFoundError:
 		print("No continue file found. Go without continue run.")
 		return {}
+def load_Once_parameters(filename):
+	# Load dictionary data from a JSON file.
+	try:
+		with open(filename, "r") as f:
+			data = json.load(f)
+		print(f"Loaded parameters from {filename}")
+		return data
+	except FileNotFoundError:
+		print("No refine once file found. Go without refine once.")
+		return {}
 if __name__ == "__main__":
 	app = MyApp()
 	app.mainloop()
+	
+	once_params = load_Once_parameters("once_params.json")
+	do_refine_once_run = True
+	if(once_params == {}):
+		do_refine_once_run = False
+	# if once_params.json exists, no other files will be read. We go directly into the refine once step.
+	# So, please delete once_params.json if you want to run conventional GisAPR.
+	if(do_refine_once_run):
+		General_params = {
+			"p": once_params["Particle Star file"],
+			"o": once_params["Output root name"],
+			"gpuid": once_params["gpuid"],
+			"i": once_params["Template Star file"],
+			"oriboxsize": once_params["Boxsize"],
+			"apix": once_params["Particle Apix"],
+			"newboxsize": once_params["Search boxsize in pixel"],
+			"script": once_params["Search script"],
+			"FSC": once_params["FSC file"],
+			"voltage": once_params["Voltage"],
+			"cs": once_params["Cs"],
+			"psiStep": once_params["Search in-plane rotation step in deg"],
+			"kk": once_params["isSPA n"],
+			"maskRadius": once_params["Mask Radius in pixel"],
+			"localRange": once_params["Local Search Range in deg"],
+			"maskEdge": once_params["Mask Soft Edge in pixel"],
+			"SplitParticles": once_params["Split particle starfile in these parts"],
+		}
+		doSplitDiffGpu = once_params["Do run split particle starfile in diff GPUs"]
+		do_ignoreFSC = True
+		do_local_search = True
+		Additional_params = ""
+		if(do_local_search == True):
+			Additional_params+=" --doLocalSearch"
+		if(do_ignoreFSC == True):
+			Additional_params += " --ignoreFSC"
+		if(doSplitDiffGpu):
+			Additional_params += " --doSplitDiffGpu"
+		Program_RootName = Path(__file__).resolve().parent
+		General_params_for_CMD = " ".join(f"--{key} {str(value).lower() if isinstance(value, bool) else value}"for key, value in General_params.items()) + Additional_params
+		Refine_Once_script = Program_RootName / "wrap_to_search.py"
+		Command = "python "+str(Refine_Once_script)+" "+General_params_for_CMD
+		print("The refine once command is:")
+		print(Command)
+		print("")
+		print("If you don't want to run refine once, please delete once_params.json")
+		quit()
 	refine_params = load_parameters("refine_params.json")
 	search_params = load_parameters("search_params.json")
 	input_params = load_parameters("input_params.json")
@@ -480,7 +641,7 @@ if __name__ == "__main__":
 	do_GPU_projection = search_params["Do GPU projection"]
 	doSplitDiffGpu = search_params["Do run split particle starfile in diff GPUs"]
 	Additional_params = ""
-	if (do_local_search == True):
+	if(do_local_search == True):
 		Additional_params+=" --do_local_search --local_stepsize "+str(search_params["Local Search Range in deg"])
 	if(do_ignoreFSC == True):
 		Additional_params += " --do_ignoreFSC"
@@ -529,7 +690,27 @@ if __name__ == "__main__":
 		+" --Simplex_Bounds "+str(Simplex_Bounds)+" --Simplex_xatol "+str(Simplex_xatol)+" --Simplex_fatol "+str(Simplex_fatol)+" --Simplex_maxiter "+str(Simplex_maxiter)
 		
 		# Simplex can only run single thread.
-
+	if(refine_params["algorithm"]=="Pattern search"):
+		Pattern_Bounds = Bounds
+	
+		Pattern_given_initial = refine_params["Pattern give initial position"]
+		Pattern_initial = refine_params["Pattern initial point"]
+		Pattern_stepsize = refine_params["Pattern stepsize"]
+		Pattern_tol = refine_params["Pattern tolerance"]
+		Pattern_shrink = refine_params["Pattern shrink eff"]
+		Pattern_expand = refine_params["Pattern expand eff"]
+		Pattern_max_iter = refine_params["Pattern Maximum iterations"]
+		print("Specify doing Pattern Search")
+		
+		Pattern_refine_warp = Program_RootName / "test_op_pattern_search_try_multithreading_v2.py"
+		Command = "python "+str(Pattern_refine_warp)+" "+General_params_for_CMD\
+		+" --max_workers "+str(max_GPU_workers)\
+		+" --Pattern_Bounds "+str(Pattern_Bounds)+" --Pattern_stepsize "+str(Pattern_stepsize)\
+		+" --Pattern_tol "+str(Pattern_tol)+" --Pattern_shrink "+str(Pattern_shrink)\
+		+" --Pattern_expand "+str(Pattern_expand)+" --Pattern_max_iter "+str(Pattern_max_iter)
+		if(Pattern_given_initial):
+			Command += " --Pattern_given_initial"+" --Pattern_initial "+"\""+Pattern_initial+"\""
+	
 	if(refine_params["algorithm"]=="Particle Swarm Optimization (PSO)"):
 		PSO_Bounds = Bounds
 		PSO_num_particles = refine_params["Number of particles"]
