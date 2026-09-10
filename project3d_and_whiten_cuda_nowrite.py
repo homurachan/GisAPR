@@ -5,7 +5,6 @@ from typing import Sequence, Tuple
 import torch
 import einops
 import time
-#import cupy as cp
 torch.set_num_threads(4)  # Set to your desired number
 # Initial version.
 # The extract_central_slices_rfft comes from libtilt team: https://github.com/teamtomo/libtilt
@@ -83,7 +82,6 @@ def apply_sinc2_filter_inplace_3d(volume, z_chunk=8):
 def run_projection(particle_star,mrc_volume,whitening,do_skip_padding,do_return_array,gpuid,output_filename):
 
 	device = 'cpu'
-	device_for_cupy = None
 	do_use_GPU = False
 	if(gpuid != None):
 		device = 'cuda:'+str(gpuid)

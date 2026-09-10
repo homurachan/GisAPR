@@ -5,7 +5,8 @@ import itertools
 import concurrent.futures
 import pickle,argparse
 from functools import partial
-from func_for_PixelSize_search import func_for_PixelSize_search
+from func_for_PixelSize_search import func_for_PixelSize_search_gpuid
+from func import prepare_workers, shutdown_workers, finalize_run
 # Initial version
 # This is made from gridsearch. It runs grid search on the pixel sizes.
 # (20250505) Add doEnableGpuProj
@@ -19,13 +20,14 @@ def create_gridsearch_parser():
 	parser.add_argument("--rotate_chain", type=str, required=True, help="In pixel size searches, you can input any existing chain.")
 	parser.add_argument("--output_name_root", type=str, default="output")
 	parser.add_argument("--gpuid", type=str, default="0", help="The gpuid to be run on. It's like 0:0:0, default = 0")
-	parser.add_argument("--ang", type=str, default="/groups/kyouko/mydata/c1_3deg_remove_rotLzero_200kV.star")
+	parser.add_argument("--ang", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "c1_3deg_remove_rotLzero_200kV.star"))
 	parser.add_argument("--boxsize", type=int, default=256)
 	parser.add_argument("--apix", type=float, default=1.58)
 	parser.add_argument("--apix_PDB", type=float, default=1.58, help="The PDB pixel sizes to be searched, default = 1.58")
 	parser.add_argument("--newboxsize", type=int, default=160)
-	parser.add_argument("--search_script", type=str, default="/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6032.py")
-	parser.add_argument("--fsc_file", type=str, default="ribo_recons_masked_vs_7k00_masked.fsc")
+	parser.add_argument("--search_script", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "test1_with_isspa_weight_varingKK_search_translation_also_v606_torch_optimized_standalone.py"))
+	parser.add_argument("--fsc_file", type=str, default=None, help="Optional FSC curve; omit to use uniform Fourier weights.")
+	parser.add_argument("--skip_geometric_restraint", action="store_true", help="Skip geometric restraint calculation and its score penalty.")
 	parser.add_argument("--transRange", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=300.0)
 	parser.add_argument("--cs", type=float, default=2.7)
@@ -43,6 +45,9 @@ def create_gridsearch_parser():
 	parser.add_argument("--doEnableGpuProj", action='store_true', help="Enable GPU projection. Will consume large amount of device memory. default = False")
 	parser.add_argument("--doSplitDiffGpu", action='store_true', help="If enabled, wrap_to_search will use different gpuid. The inital gpuid is provided by --gpuid. default = False")
 	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
+	# Pixel-size scoring historically did not apply geometric penalties.
+	parser.set_defaults(skip_geometric_restraint=True)
+	parser.add_argument("--enable_geometric_restraint", dest="skip_geometric_restraint", action="store_false", help="Opt in to geometric restraint during pixel-size search.")
 	# PSO parameters
 	parser.add_argument("--Pixelsize_Bounds", type=str, default="(-0.1,0.1)", help="The search range of the pixel sizes, default = (-0.1,0.1). The actual range adds to apix_PDB")
 	parser.add_argument("--Pixelsize_stepsize", type=float, default=0.01, help="The search stepsize of the pixel sizes, default = 0.01")
@@ -85,24 +90,22 @@ def convert_Bounds_to_bounds_for_grid(args):
 		bounds[i,1]=HIGH+apix_PDB
 	return bounds
 
+def main():
+	args = create_gridsearch_parser().parse_args()
+	bounds = convert_Bounds_to_bounds_for_grid(args)
+	positions = generate_grid(bounds, np.array([args.Pixelsize_stepsize]), args.Grid_dimensions)
+	gpuids = args.gpuid.split(":")
+	tasks = [(pose, gpuids[i % len(gpuids)]) for i, pose in enumerate(positions)]
+	try:
+		prepare_workers(args)
+		with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers_GPU) as executor:
+			results = list(executor.map(partial(func_for_PixelSize_search_gpuid, args=args), tasks))
+		with open("PixelSize_Search.log", "a") as handle:
+			handle.write(str([[results, positions]]) + "\n")
+		finalize_run(args)
+	finally:
+		shutdown_workers(args)
+
+
 if __name__ == "__main__":
-	
-	parser = create_gridsearch_parser()
-	args = parser.parse_args()
-	BOUNDS = convert_Bounds_to_bounds_for_grid(args)
-	dimensions=args.Grid_dimensions
-	STEPSIZE = np.array([args.Pixelsize_stepsize])  # Step sizes for each dimension
-	positions = generate_grid(BOUNDS, STEPSIZE,dimensions)
-	new_grid = positions
-	print("positions",positions)
-#	print("new_grid",new_grid)
-	
-	FILE_LOG2=open("PixelSize_Search.log","a")
-	for pos in range(len(new_grid)):
-		FILE_LOG2.write(str(new_grid[pos]))
-	func_partial = partial(func_for_PixelSize_search, args=args)
-	with concurrent.futures.ProcessPoolExecutor(max_workers=args.max_workers_GPU) as executor2:
-		results_search = list(executor2.map(func_partial, new_grid))
-		optimization_history.append([results_search, new_grid])
-		FILE_LOG2.write(str(optimization_history))
-	FILE_LOG2.close()
+	main()

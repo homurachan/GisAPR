@@ -8,10 +8,12 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.compose import TransformedTargetRegressor
 import concurrent.futures
 from functools import partial
-from func import func_gpuid
+from func import func_gpuid, prepare_workers, shutdown_workers, finalize_run
 import joblib
 import glob
 import json
+import ast
+from optimizer_checkpoint import atomic_npz
 # changelog ver32
 # add geometric restrain as bias to final values.
 # changelog ver33
@@ -63,13 +65,14 @@ def create_PSO_parser():
 	parser.add_argument("--rotate_chain", type=str, required=True)
 	parser.add_argument("--output_name_root", type=str, default="output")
 	parser.add_argument("--gpuid", type=str, default="0")
-	parser.add_argument("--ang", type=str, default="/groups/kyouko/mydata/c1_3deg_remove_rotLzero_200kV.star")
+	parser.add_argument("--ang", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "c1_3deg_remove_rotLzero_200kV.star"))
 	parser.add_argument("--boxsize", type=int, default=256)
 	parser.add_argument("--apix", type=float, default=1.58)
 	parser.add_argument("--apix_PDB", type=float, default=1.58)
 	parser.add_argument("--newboxsize", type=int, default=160)
-	parser.add_argument("--search_script", type=str, default="/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6032.py")
-	parser.add_argument("--fsc_file", type=str, default="ribo_recons_masked_vs_7k00_masked.fsc")
+	parser.add_argument("--search_script", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "test1_with_isspa_weight_varingKK_search_translation_also_v606_torch_optimized_standalone.py"))
+	parser.add_argument("--fsc_file", type=str, default=None, help="Optional FSC curve; omit to use uniform Fourier weights.")
+	parser.add_argument("--skip_geometric_restraint", action="store_true", help="Skip geometric restraint calculation and its score penalty.")
 	parser.add_argument("--transRange", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=300.0)
 	parser.add_argument("--cs", type=float, default=2.7)
@@ -99,10 +102,11 @@ def create_PSO_parser():
 	parser.add_argument("--PSO_add_noise_velocities", action="store_true")
 	parser.add_argument("--PSO_noise_strength", type=float, default=1.0)
 	parser.add_argument("--PSO_noise_decay_per_round", type=float, default=0.99)
-	parser.add_argument("--PSO_continue", action="store_true")
-	parser.add_argument("--PSO_continue_file", type=str, default=None)
-	parser.add_argument("--PSO_continue_more_rounds", type=int, default=20)
+	parser.add_argument("--PSO_continue", "--continue_run", action="store_true")
+	parser.add_argument("--PSO_continue_file", "--continue_file", type=str, default=None)
+	parser.add_argument("--PSO_continue_more_rounds", "--continue_more_rounds", type=int, default=20)
 	parser.add_argument("--PSO_continue_reset_velocities", action="store_true")
+	parser.add_argument("--PSO_pivot_point", type=str, default=None, help="Attraction point in pose parameter space: rot,tilt,psi (degrees),tx,ty,tz (angstrom). Default all zeros; this is not a physical rotation center.")
 	# mlp model parameters
 	parser.add_argument("--PSO_use_surrogate", action="store_true")
 	parser.add_argument("--PSO_surrogate_start_round", type=int, default=5, help="Start training surrogate after this many completed PSO rounds.")
@@ -120,6 +124,10 @@ class PSO:
 		self.num_particles = args.PSO_num_particles
 		self.dimensions = args.PSO_dimensions
 		self.bounds = bounds
+		pivot_text = getattr(args, "PSO_pivot_point", None)
+		self.pivot_point = np.zeros(self.dimensions, dtype=float) if not pivot_text else np.asarray(ast.literal_eval(pivot_text), dtype=float)
+		if self.pivot_point.shape != (self.dimensions,) or not np.all(np.isfinite(self.pivot_point)):
+			raise ValueError("--PSO_pivot_point needs one finite value per PSO dimension")
 		self.max_workers=args.max_workers
 		self.MAXIUM_ALLOWED_overlapped_pixels=args.MAXIUM_ALLOWED_overlapped_pixels
 		
@@ -168,7 +176,7 @@ class PSO:
 		
 		# Initialize particles
 		self.positions = self.initialize_particles()
-		directions = -self.positions
+		directions = self.pivot_point - self.positions
 		self.V_LOW_SCALE=0.1
 		self.V_HIGH_SCALE=0.2
 		random_magnitudes = np.random.uniform(-1.0*self.V_HIGH_SCALE,self.V_HIGH_SCALE,size=(self.num_particles,1))
@@ -434,138 +442,138 @@ class PSO:
 					ok = self.maybe_train_surrogate(force=True)
 					print(f"Bootstrap surrogate training success = {ok}")
 
-		for iteration in range(n):
-			GO_SKIP_surrogate = False
-			actual_iter = self.current_iteration
-			w = self.compute_inertia_weight(actual_iter, self.max_iterations)
+		with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+			for iteration in range(n):
+				GO_SKIP_surrogate = False
+				actual_iter = self.current_iteration
+				w = self.compute_inertia_weight(actual_iter, self.max_iterations)
 
-			print(f"Iteration {actual_iter + 1}/{self.max_iterations}, w={w}")
+				print(f"Iteration {actual_iter + 1}/{self.max_iterations}, w={w}")
 
-			# --------------------------------------------------
-			# 1) real evaluation at current positions
-			# --------------------------------------------------
-			args_list = zip(self.positions, self.gpuid_list)
-			with concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+				# --------------------------------------------------
+				# 1) real evaluation at current positions
+				# --------------------------------------------------
+				args_list = zip(self.positions, self.gpuid_list)
 				func_partial = partial(self.obj_func, args=self.args)
 				scores = list(executor.map(func_partial, args_list))
 
-			scores = np.array(scores, dtype=np.float64)
-			print("PSO debug, scores, positions = ", scores, self.positions)
-			optimization_history.append([scores.copy(), self.positions.copy()])
+				scores = np.array(scores, dtype=np.float64)
+				print("PSO debug, scores, positions = ", scores, self.positions)
+				optimization_history.append([scores.copy(), self.positions.copy()])
 
-			# store new real evaluated data for surrogate
-			self.add_history(self.positions, scores)
+				# store new real evaluated data for surrogate
+				self.add_history(self.positions, scores)
 
-			# maybe train / retrain surrogate
-			self.maybe_train_surrogate()
+				# maybe train / retrain surrogate
+				self.maybe_train_surrogate()
 
-			# --------------------------------------------------
-			# 2) update pbest / gbest
-			# --------------------------------------------------
-			better_mask = scores < self.pbest_scores
-			self.pbest_scores[better_mask] = scores[better_mask]
-			self.pbest_positions[better_mask] = self.positions[better_mask]
+				# --------------------------------------------------
+				# 2) update pbest / gbest
+				# --------------------------------------------------
+				better_mask = scores < self.pbest_scores
+				self.pbest_scores[better_mask] = scores[better_mask]
+				self.pbest_positions[better_mask] = self.positions[better_mask]
 
-			min_score_idx = np.argmin(scores)
-			if scores[min_score_idx] < self.gbest_score:
-				self.gbest_score = scores[min_score_idx]
-				self.gbest_position = self.positions[min_score_idx].copy()
+				min_score_idx = np.argmin(scores)
+				if scores[min_score_idx] < self.gbest_score:
+					self.gbest_score = scores[min_score_idx]
+					self.gbest_position = self.positions[min_score_idx].copy()
 
-			# --------------------------------------------------
-			# 3) standard PSO velocity terms
-			# --------------------------------------------------
-			r1 = np.random.uniform(size=(self.num_particles, self.dimensions))
-			r2 = np.random.uniform(size=(self.num_particles, self.dimensions))
+				# --------------------------------------------------
+				# 3) standard PSO velocity terms
+				# --------------------------------------------------
+				r1 = np.random.uniform(size=(self.num_particles, self.dimensions))
+				r2 = np.random.uniform(size=(self.num_particles, self.dimensions))
 
-			c1_rest_tomultipy = r1 * (self.pbest_positions - self.positions)
-			c2_rest_tomultipy = r2 * (self.gbest_position - self.positions)
+				c1_rest_tomultipy = r1 * (self.pbest_positions - self.positions)
+				c2_rest_tomultipy = r2 * (self.gbest_position - self.positions)
 
-			cognitive, social = self.generate_cognitive(c1_rest_tomultipy, c2_rest_tomultipy)
-			base_velocities = w * self.velocities + cognitive + social
+				cognitive, social = self.generate_cognitive(c1_rest_tomultipy, c2_rest_tomultipy)
+				base_velocities = w * self.velocities + cognitive + social
 			
-			# no surrogate_term when the base_velocities are smaller than self.SKIP_surrogate_THRESHOLD.
-			max_velocity = np.max(np.abs(base_velocities))
+				# no surrogate_term when the base_velocities are smaller than self.SKIP_surrogate_THRESHOLD.
+				max_velocity = np.max(np.abs(base_velocities))
 
-			if (max_velocity< self.SKIP_surrogate_THRESHOLD):
-				GO_SKIP_surrogate = True
-				print(f"max_velocity = {max_velocity}, will skip surrogate if surrogate_is_ready is true.")
-			# --------------------------------------------------
-			# 4) optional surrogate guidance
-			# --------------------------------------------------
-			if self.surrogate_is_ready and (not GO_SKIP_surrogate):
-				positions_try_for_surrogate = self.positions + base_velocities
-				sur_scores_try = self.predict_with_surrogate(positions_try_for_surrogate)
+				if (max_velocity< self.SKIP_surrogate_THRESHOLD):
+					GO_SKIP_surrogate = True
+					print(f"max_velocity = {max_velocity}, will skip surrogate if surrogate_is_ready is true.")
+				# --------------------------------------------------
+				# 4) optional surrogate guidance
+				# --------------------------------------------------
+				if self.surrogate_is_ready and (not GO_SKIP_surrogate):
+					positions_try_for_surrogate = self.positions + base_velocities
+					sur_scores_try = self.predict_with_surrogate(positions_try_for_surrogate)
 
-				if sur_scores_try is not None and np.all(np.isfinite(sur_scores_try)):
-					best_sur_idx = np.argmin(sur_scores_try)
-					surrogate_target = positions_try_for_surrogate[best_sur_idx].copy()
-					surrogate_best_score = sur_scores_try[best_sur_idx]
+					if sur_scores_try is not None and np.all(np.isfinite(sur_scores_try)):
+						best_sur_idx = np.argmin(sur_scores_try)
+						surrogate_target = positions_try_for_surrogate[best_sur_idx].copy()
+						surrogate_best_score = sur_scores_try[best_sur_idx]
 
-					# conservative gating:
-					# only apply surrogate if it predicts something clearly better
-					margin = 0.0
-					if surrogate_best_score < self.gbest_score - margin:
-						r3 = np.random.uniform(size=(self.num_particles, self.dimensions))
-						surrogate_term = self.surrogate_weight * r3 * (surrogate_target - self.positions)
-						self.velocities = base_velocities + surrogate_term
+						# conservative gating:
+						# only apply surrogate if it predicts something clearly better
+						margin = 0.0
+						if surrogate_best_score < self.gbest_score - margin:
+							r3 = np.random.uniform(size=(self.num_particles, self.dimensions))
+							surrogate_term = self.surrogate_weight * r3 * (surrogate_target - self.positions)
+							self.velocities = base_velocities + surrogate_term
 
-						print("Surrogate guidance active.")
-						print("Surrogate best predicted score:", surrogate_best_score)
-						print("Surrogate target:", surrogate_target)
+							print("Surrogate guidance active.")
+							print("Surrogate best predicted score:", surrogate_best_score)
+							print("Surrogate target:", surrogate_target)
+						else:
+							self.velocities = base_velocities
 					else:
 						self.velocities = base_velocities
 				else:
 					self.velocities = base_velocities
-			else:
-				self.velocities = base_velocities
 			
-			# --------------------------------------------------
-			# 5) boundary handling / overlap handling
-			# --------------------------------------------------
-			positions_try = self.positions + self.velocities
+				# --------------------------------------------------
+				# 5) boundary handling / overlap handling
+				# --------------------------------------------------
+				positions_try = self.positions + self.velocities
 
-			for d in range(self.dimensions):
-				hit_lower = positions_try[:, d] <= self.bounds[d][0]
-				hit_upper = positions_try[:, d] >= self.bounds[d][1]
+				for d in range(self.dimensions):
+					hit_lower = positions_try[:, d] <= self.bounds[d][0]
+					hit_upper = positions_try[:, d] >= self.bounds[d][1]
 
-				positions_try[:, d] = np.clip(
-					positions_try[:, d],
-					self.bounds[d][0],
-					self.bounds[d][1]
-				)
-
-				random_magnitudes = np.random.uniform(
-					self.V_LOW_SCALE,
-					self.V_HIGH_SCALE,
-					size=(self.num_particles,)
-				)
-				self.velocities[hit_lower | hit_upper, d] = \
-					-self.positions[hit_lower | hit_upper, d] * random_magnitudes[hit_lower | hit_upper]
-
-			for ii in range(self.num_particles):
-				if scores[ii] >= self.MAXIUM_ALLOWED_overlapped_pixels:
-					central_velocity_magnitudes = np.random.uniform(
-						low=self.V_LOW_SCALE,
-						high=self.V_HIGH_SCALE,
-						size=(self.dimensions,)
+					positions_try[:, d] = np.clip(
+						positions_try[:, d],
+						self.bounds[d][0],
+						self.bounds[d][1]
 					)
-					self.velocities[ii] += central_velocity_magnitudes * -self.positions[ii]
 
-			if self.do_add_noise_velocities:
-				noise = np.random.normal(0.0, self.sigma, size=self.velocities.shape)
-				self.velocities += noise
+					random_magnitudes = np.random.uniform(
+						self.V_LOW_SCALE,
+						self.V_HIGH_SCALE,
+						size=(self.num_particles,)
+					)
+					self.velocities[hit_lower | hit_upper, d] = \
+						(self.pivot_point[d] - self.positions[hit_lower | hit_upper, d]) * random_magnitudes[hit_lower | hit_upper]
 
-			# --------------------------------------------------
-			# 6) move particles
-			# --------------------------------------------------
-			self.positions += self.velocities
+				for ii in range(self.num_particles):
+					if not getattr(self.args, "skip_geometric_restraint", False) and scores[ii] >= self.MAXIUM_ALLOWED_overlapped_pixels:
+						central_velocity_magnitudes = np.random.uniform(
+							low=self.V_LOW_SCALE,
+							high=self.V_HIGH_SCALE,
+							size=(self.dimensions,)
+						)
+						self.velocities[ii] += central_velocity_magnitudes * (self.pivot_point - self.positions[ii])
 
-			if self.callback:
-				self.callback(self.positions, scores, self.velocities, self.gbest_position, self.gbest_score)
+				if self.do_add_noise_velocities:
+					noise = np.random.normal(0.0, self.sigma, size=self.velocities.shape)
+					self.velocities += noise
 
-			save_pso_state_round(self, self.current_iteration, prefix="my_pso_state_round_")
-			self.current_iteration += 1
-			self.sigma *= self.noise_decay_per_round
+				# --------------------------------------------------
+				# 6) move particles
+				# --------------------------------------------------
+				self.positions += self.velocities
+
+				if self.callback:
+					self.callback(self.positions, scores, self.velocities, self.gbest_position, self.gbest_score)
+
+				self.current_iteration += 1
+				self.sigma *= self.noise_decay_per_round
+				save_pso_state_round(self, self.current_iteration, prefix="my_pso_state_round_")
 
 		print(f"Finished {n} more iterations (total so far: {self.current_iteration}).")
 		AA = open("PSO_optimization_history.log", "a")
@@ -666,11 +674,15 @@ class PSO:
 		# Construct a new PSO instance with matching hyperparams
 		# Note, the args and bounds have to be the identical to original entry.
 		pso = PSO(
-			objective_func=func_gpuid,
-			args=args,
-			bounds=bounds,
-			callback=my_callback
+			objective_func=objective_func,
+			args=self.args,
+			bounds=np.asarray(hyperparams.get('bounds', self.bounds)),
+			callback=self.callback if callback is None else callback
 		)
+		if data['positions'].shape != (pso.num_particles, pso.dimensions):
+			raise ValueError("Checkpoint dimensions / particle count do not match the supplied PSO settings")
+		if not getattr(self.args, 'PSO_pivot_point', None):
+			pso.pivot_point = np.asarray(hyperparams.get('pivot_point', np.zeros(pso.dimensions)))
 		
 		# Now overwrite its internal arrays with the saved state
 		pso.positions        = data['positions']
@@ -680,12 +692,27 @@ class PSO:
 		pso.gbest_position   = data['gbest_position']
 		pso.gbest_score      = data['gbest_score']
 		if(reset_velocities):
-			pso.velocities = np.random.uniform(-1.0,1.0,size=(self.num_particles,6))
+			pso.velocities = np.random.uniform(-1.0,1.0,size=(self.num_particles,self.dimensions))
 			pso.positions += pso.velocities
 			print(f"Reset velocities. pso.velocities = {pso.velocities }")
 			print(f"New positions = {pso.positions }")
 		# current_iteration needs to be cast back from the array
 		pso.current_iteration = int(data['current_iteration'][0])
+		version = int(data['checkpoint_version']) if 'checkpoint_version' in data else 1
+		if version < 2:
+			# Legacy saves were written after movement, but before increasing nit.
+			pso.current_iteration += 1
+		if 'sigma' in data:
+			pso.sigma = float(data['sigma'])
+		else:
+			pso.sigma = pso.noise_strength * pso.noise_decay_per_round ** pso.current_iteration
+		if 'rng_state' in data and not reset_velocities:
+			np.random.set_state(tuple(data['rng_state']))
+		if 'history_X' in data:
+			pso.history_X = list(data['history_X'])
+			pso.history_y = list(data['history_y'])
+		pso.max_iterations = int(hyperparams.get('max_iterations', pso.max_iterations))
+		data.close()
 		
 		# Done! Now 'pso' should have the exact same state as before.
 		print(f"PSO state loaded from: {filename}")
@@ -699,8 +726,13 @@ def save_pso_state_round(pso, iteration, prefix="my_pso_state_round_"):
 	"""
 	filename = f"{prefix}{iteration}.npz"
 
-	np.savez(
+	atomic_npz(
 		filename,
+		checkpoint_version=np.array(2),
+		sigma=np.array(pso.sigma),
+		rng_state=np.array(np.random.get_state(), dtype=object),
+		history_X=np.asarray(pso.history_X),
+		history_y=np.asarray(pso.history_y),
 		positions=pso.positions,
 		velocities=pso.velocities,
 		pbest_positions=pso.pbest_positions,
@@ -714,6 +746,7 @@ def save_pso_state_round(pso, iteration, prefix="my_pso_state_round_"):
 			'num_particles': pso.num_particles,
 			'dimensions': pso.dimensions,
 			'bounds': pso.bounds,
+			'pivot_point': pso.pivot_point,
 			'min_distance_rotation': pso.min_distance_rotation,
 			'min_distance_translation': pso.min_distance_translation,
 			'w_max': pso.w_max,
@@ -749,36 +782,27 @@ def convert_PSO_Bounds_to_bounds(args):
 		bounds[i,0]=LOW
 		bounds[i,1]=HIGH
 	return bounds
-if __name__ == "__main__":
-	# Instantiate PSO
+def main():
 	parser = create_PSO_parser()
 	args = parser.parse_args()
 	bounds = convert_PSO_Bounds_to_bounds(args)
-	# First 2 are rot/tilt in degree, the last 3 are transX/Y/Z in Angstrom
-	pso = PSO(
-		objective_func=func_gpuid,
-		args=args,
-		bounds=bounds,
-		callback=my_callback
-	)
-	run_continue=args.PSO_continue
-	continue_rounds=args.PSO_continue_more_rounds
-	continue_run_filename=args.PSO_continue_file
-	reset_velocities = args.PSO_continue_reset_velocities
-	# Run optimization
-	if(not run_continue):
-		pso.optimize()
+	pso = PSO(objective_func=func_gpuid, args=args, bounds=bounds, callback=my_callback)
+	if args.PSO_continue:
+		if not args.PSO_continue_file:
+			parser.error("--PSO_continue requires --PSO_continue_file")
+		pso = pso.from_file(args.PSO_continue_file, objective_func=func_gpuid,
+			reset_velocities=args.PSO_continue_reset_velocities)
+	try:
+		prepare_workers(args)
+		if args.PSO_continue:
+			pso.run_iterations(args.PSO_continue_more_rounds)
+		else:
+			pso.optimize()
 		print("Finish PSO.")
-	else:
-		try:
-			pso_restored = pso.from_file(filename=continue_run_filename, objective_func=func_gpuid,reset_velocities=reset_velocities)
+		finalize_run(args)
+	finally:
+		shutdown_workers(args)
 
-			# The new 'pso_restored' now has the same positions, velocities, etc.
-			print("Restored iteration:", pso_restored.current_iteration)
-			print("Restored best score:", pso_restored.gbest_score)
 
-			# Continue optimization for continue_rounds more iterations, for example
-			pso_restored.run_iterations(continue_rounds)
-
-		except FileNotFoundError:
-			print(f"Your continue file '{continue_run_filename}' does not exist. EXIT.")
+if __name__ == "__main__":
+	main()

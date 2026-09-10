@@ -38,7 +38,7 @@ def main():
 	aa=a.readlines()
 	print("debug,",len(results_file))
 	for i in range(0,len(aa)):
-		filename=aa[i].split()[0]
+		filename=aa[i].strip()  # One complete filename per index line, including spaces.
 		if(i%1==0):
 			bb.write(filename+"\n")
 		thres,CC_value,ZSCORE_value,total_estimated_sum_cc=run_this(filename,do_run_CC,do_simple_sum)
@@ -131,7 +131,7 @@ def run_this(results_file,do_run_CC,do_simple_sum):
 		total_estimated_sum_cc = left_estimated_cc+right_estimated_cc
 	#	print(number_larger_than_peak,left_estimated_cc,right_estimated_cc,total_estimated_sum_cc)
 		if(do_simple_sum>0):
-			total_estimated_sum_cc = np.sum(CC_data)
+			total_estimated_sum_cc = np.sum(np.exp(CC_data))
 		print("total_estimated_sum_cc = ",total_estimated_sum_cc)
 		return 0.0,refined_x,0.0,total_estimated_sum_cc
 	if (do_run_CC < 1 and len(data>0)):

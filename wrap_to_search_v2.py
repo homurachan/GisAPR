@@ -1,86 +1,115 @@
-import os, sys
+"""Split particle searches while reusing one permanent process per device."""
 import argparse
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
+import os
+from pathlib import Path
+import shlex
+import shutil
 import subprocess
-# set default transRange to 0, set psiStep type to float.
+import sys
+
+
 def create_SEARCH_parser():
-	parser = argparse.ArgumentParser(description="Read search params.")
-	parser.add_argument("--script", type=str, required=True, help="The script file")
-	parser.add_argument("--i", type=str, required=True, help="Input model file")
-	parser.add_argument("--ang", type=str, required=True, help="Input angle star file")
-	parser.add_argument("--mrc", type=str, required=True, help="Input 3D mrc file")
-	parser.add_argument("--p", type=str, required=True, help="Input particle file")
-	parser.add_argument("--FSC", type=str, default = None, help="Input FSC file")
-	parser.add_argument("--o", type=str, required=True, help="Output file")
-	parser.add_argument("--kk", type=float, default=0., help="The kk value, default = 0")
-	parser.add_argument("--gpuid", type=int, default=0, help="The specified GPU ID, default = 0")
-	parser.add_argument("--oriboxsize", type=int, default=256, help="The original boxsize, default = 256 (pixel)")
-	parser.add_argument("--newboxsize", type=int, default=256, help="The new boxsize, default = 256 (pixel)")
-	parser.add_argument("--apix", type=float, default=1.42, help="The ORIGINAL pixel size, default = 1.42")
-	parser.add_argument("--transRange", type=int, default=0, help="Translation search range in pixel, default = 30. When set to 0, no translation would be searched.")
-	parser.add_argument("--voltage", type=float, default=300, help="The voltage in kV, default = 300")
-	parser.add_argument("--cs", type=float, default=2.7, help="The cc in mm, default = 2.7")
-	parser.add_argument("--maskRadius", type=int, default=110, help="The softmask radius in pixel, corresponding to original boxsize, default = 110")
-	parser.add_argument("--maskEdge", type=int, default=6, help="The softmask edge width in pixel, default = 6")
-	parser.add_argument("--ignoreFSC", action='store_true', help="For testing purpose, ignoring the FSC weight. default = False")
-	parser.add_argument("--discardMask", action='store_true', help="For testing purpose, apply NO soft mask. default = False")
-	parser.add_argument("--psiStep", type=float, default=15, help="The psi angle search step in deg, default = 15")
-	parser.add_argument("--doLocalSearch", action='store_true', help="Only search for the local orientations. Should combine with --localRange. default = False")
-	parser.add_argument("--localRange", type=float, default=20., help="The local search range in +- this degree. Also applies to psi search.")
-	parser.add_argument("--SplitParticles", type=int, default=1, help="Split the starfile into these sections. Default = 1")
-	parser.add_argument("--doSplitDiffGpu", action='store_true', help="If enabled, wrap_to_search will use different gpuid. The inital gpuid is provided by --gpuid. default = False")
-	return parser
-	
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('script', 'i', 'ang', 'mrc', 'p', 'o'):
+        parser.add_argument('--' + name, required=True)
+    parser.add_argument('--FSC', default=None, help='Optional; omitted means unit FSC weights')
+    parser.add_argument('--gpuid', default='0')
+    for name, default in [('kk', 0.), ('apix', 1.42), ('voltage', 300.), ('cs', 2.7),
+                          ('psiStep', 15.), ('localRange', 20.)]:
+        parser.add_argument('--' + name, type=float, default=default)
+    for name, default in [('oriboxsize', 256), ('newboxsize', 256), ('transRange', 0),
+                          ('maskRadius', 110), ('maskEdge', 6), ('SplitParticles', 1)]:
+        parser.add_argument('--' + name, type=int, default=default)
+    for name in ('ignoreFSC', 'discardMask', 'doLocalSearch', 'doSplitDiffGpu'):
+        parser.add_argument('--' + name, action='store_true')
+    return parser
+
 
 def test_length(starfile_name):
-	a=open(starfile_name,'r')
-	data=a.readlines()
-	length=len(data)
-	a.close()
-	return length
-def generate_command(args,start,end,serial_number):
-	sh2_command_line ="python "+args.script+" --i "+args.i+" --p "+args.p+" --FSC "+ args.FSC+" --oriboxsize "+str(args.oriboxsize)+" --newboxsize "+str(args.newboxsize)+\
-	" --apix "+str(args.apix)+" --transRange "+str(args.transRange)+" --voltage "+str(args.voltage)+" --cs "+str(args.cs) \
-	+" --maskRadius "+str(args.maskRadius)+" --maskEdge "+str(args.maskEdge)+" --psiStep "+str(args.psiStep)+" --kk "+str(args.kk)\
-	+" --mrc "+str(args.mrc)+" --ang "+str(args.ang)
-	if(args.ignoreFSC):
-		sh2_command_line+=" --ignoreFSC "
-	if(args.discardMask):
-		sh2_command_line+=" --discardMask "
-	if(args.doSplitDiffGpu):
-		sh2_command_line+="--gpuid "+str(args.gpuid+serial_number)
-	else:
-		sh2_command_line+="--gpuid "+str(args.gpuid)
-	if(args.doLocalSearch):
-		sh2_command_line+=" --doLocalSearch --localRange "+str(args.localRange)
-	sh2_command_line+=" --start "+str(start)+" --end "+str(end)
-	new_filename = args.o+"_tmp"+str(serial_number)
-	sh2_command_line+=" --o "+new_filename
-#	print(sh2_command_line)
-	return sh2_command_line,new_filename
-	
+    # start/end refer to original STAR line indices, exactly as in v209.
+    with open(starfile_name) as handle:
+        return sum(1 for _ in handle)
+
+
+def search_argv(args, start, end, serial_number):
+    argv = []
+    for name in ('i', 'p', 'oriboxsize', 'newboxsize', 'apix', 'transRange', 'voltage',
+                 'cs', 'maskRadius', 'maskEdge', 'psiStep', 'kk', 'mrc', 'ang'):
+        argv.extend(['--' + name, str(getattr(args, name))])
+    if args.FSC and str(args.FSC).strip():
+        argv.extend(['--FSC', str(args.FSC)])
+    for name in ('ignoreFSC', 'discardMask', 'doLocalSearch'):
+        if getattr(args, name):
+            argv.append('--' + name)
+    if args.doLocalSearch:
+        argv.extend(['--localRange', str(args.localRange)])
+    # The worker assigns the actual device after parsing this compatibility value.
+    argv.extend(['--gpuid', '0', '--start', str(start), '--end', str(end)])
+    filename = str(args.o) + '_tmp' + str(serial_number)
+    argv.extend(['--o', filename])
+    return argv, filename
+
+
+def generate_command(args, start, end, serial_number):
+    argv, filename = search_argv(args, start, end, serial_number)
+    from gisapr_runtime import resolve_script
+    gpuid = str(args.gpuid).split(':')[0]
+    if args.doSplitDiffGpu and gpuid != 'cpu':
+        gpuid = str(int(gpuid) + serial_number)
+    argv[argv.index('--gpuid') + 1] = '0' if gpuid == 'cpu' else gpuid
+    return shlex.join([sys.executable, str(resolve_script(args.script)), *argv]), filename
+
+
 def run_command(command):
-	return subprocess.call(command, shell=True)	
-	
-if __name__ == "__main__":
-	parser = create_SEARCH_parser()
-	args = parser.parse_args()
-	length = test_length(args.p)
-	Split_num = length // args.SplitParticles + 1
-	commands = []
-	new_file = []
-	for i in range(0,args.SplitParticles):
-		start = i*Split_num
-		end = (i+1)*Split_num
-		command,new_filename = generate_command(args,start,end,i)
-		commands.append(command)
-		new_file.append(new_filename)
-#	print(commands)
-	with concurrent.futures.ProcessPoolExecutor(max_workers=args.SplitParticles) as executor:
-		results = list(executor.map(run_command, commands))
-	
-	with open(args.o, 'w') as outfile:
-		for temp_filename in new_file:
-			with open(temp_filename, 'r') as infile:
-				outfile.write(infile.read())
-			os.remove(temp_filename)
+    # Kept as a public helper for callers of earlier versions.
+    subprocess.run(shlex.split(command), check=True)
+    return 0
+
+
+def run_searches(args, available_gpu_ids=None):
+    from gisapr_runtime import device_ids, get_worker
+    count = int(args.SplitParticles)
+    if count < 1:
+        raise ValueError('SplitParticles must be >= 1')
+    base_ids = available_gpu_ids or device_ids(args.gpuid)
+    if args.doSplitDiffGpu:
+        ids = list(base_ids)
+        if len(ids) == 1 and ids[0] != 'cpu':
+            ids = [str(int(ids[0]) + i) for i in range(count)]
+    else:
+        ids = [str(args.gpuid).split(':')[0]]
+    workers = {gpu: get_worker(gpu, args.script) for gpu in ids}
+    split_num = test_length(args.p) // count + 1
+    jobs = []
+    filenames = []
+    for i in range(count):
+        argv, filename = search_argv(args, i * split_num, (i + 1) * split_num, i)
+        jobs.append((workers[ids[i % len(ids)]], argv))
+        filenames.append(filename)
+    def execute(job):
+        worker, argv = job
+        worker.request('search', argv=argv)
+    # The per-worker lock serializes jobs sharing a device.
+    with ThreadPoolExecutor(max_workers=len(ids)) as executor:
+        list(executor.map(execute, jobs))
+    Path(args.o).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.o, 'w') as output:
+        for filename in filenames:
+            with open(filename) as source:
+                shutil.copyfileobj(source, output)
+            os.remove(filename)
+    return args.o
+
+
+def main():
+    from gisapr_runtime import shutdown_workers
+    args = create_SEARCH_parser().parse_args()
+    try:
+        run_searches(args)
+    finally:
+        shutdown_workers()
+
+
+if __name__ == '__main__':
+    main()

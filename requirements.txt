@@ -1,10 +1,9 @@
-biopython
-cupy
+numpy
+scipy
+torch
+mrcfile
 einops
 matplotlib
-mrcfile
-numpy
-pytorch
-scipy
-tkinter
-# if tkinter is not installed
+scikit-learn
+joblib
+# tkinter is an optional OS/Python component, only needed by the GUI.

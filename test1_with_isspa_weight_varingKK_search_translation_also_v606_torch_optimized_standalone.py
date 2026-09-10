@@ -1569,6 +1569,10 @@ def create_search_parser() -> argparse.ArgumentParser:
 
 
 def choose_device(gpuid: int) -> torch.device:
+    # Worker-only CPU selection also permits validation on GPU hosts without
+    # changing the existing standalone --gpuid command-line interface.
+    if gpuid == "cpu":
+        return torch.device("cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(gpuid)
         return torch.device(f"cuda:{gpuid}")
@@ -1822,6 +1826,11 @@ def run_search(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    if "--worker-connect" in sys.argv[1:]:
+        from gisapr_worker import run_worker
+
+        run_worker(create_search_parser, run_search, choose_device)
+        return
     parser = create_search_parser()
     args = parser.parse_args()
     with torch.inference_mode():

@@ -4,10 +4,11 @@ from scipy.optimize import minimize,Bounds
 import os,sys,argparse,math
 from functools import partial
 from scipy.spatial.transform import Rotation as R
-from func import func_gpuid
+from func import func_gpuid, prepare_workers, shutdown_workers, finalize_run
 from dataclasses import dataclass
 import concurrent.futures
 import time
+from optimizer_checkpoint import atomic_npz
 # chatgpt generated pattern search
 # changelog ver2
 # Add multithreading.
@@ -24,13 +25,14 @@ def create_simplex_parser():
 	parser.add_argument("--rotate_chain", type=str, required=True)
 	parser.add_argument("--output_name_root", type=str, default="output")
 	parser.add_argument("--gpuid", type=str, default="0")
-	parser.add_argument("--ang", type=str, default="/groups/kyouko/mydata/c1_3deg_remove_rotLzero_200kV.star")
+	parser.add_argument("--ang", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "c1_3deg_remove_rotLzero_200kV.star"))
 	parser.add_argument("--boxsize", type=int, default=256)
 	parser.add_argument("--apix", type=float, default=1.58)
 	parser.add_argument("--apix_PDB", type=float, default=1.58)
 	parser.add_argument("--newboxsize", type=int, default=160)
-	parser.add_argument("--search_script", type=str, default="/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6032.py")
-	parser.add_argument("--fsc_file", type=str, default="ribo_recons_masked_vs_7k00_masked.fsc")
+	parser.add_argument("--search_script", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "test1_with_isspa_weight_varingKK_search_translation_also_v606_torch_optimized_standalone.py"))
+	parser.add_argument("--fsc_file", type=str, default=None, help="Optional FSC curve; omit to use uniform Fourier weights.")
+	parser.add_argument("--skip_geometric_restraint", action="store_true", help="Skip geometric restraint calculation and its score penalty.")
 	parser.add_argument("--transRange", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=300.0)
 	parser.add_argument("--cs", type=float, default=2.7)
@@ -59,8 +61,9 @@ def create_simplex_parser():
 	parser.add_argument("--Pattern_max_iter", type=int, default=500)
 	parser.add_argument("--Pattern_shrink", type=float, default=0.5)
 	parser.add_argument("--Pattern_expand", type=float, default=1.2)
-	parser.add_argument("--Pattern_continue", action="store_true")
-	parser.add_argument("--Pattern_continue_file", type=str, default=None)
+	parser.add_argument("--Pattern_continue", "--continue_run", action="store_true")
+	parser.add_argument("--Pattern_continue_file", "--continue_file", type=str, default=None)
+	parser.add_argument("--Pattern_continue_more_rounds", "--continue_more_rounds", type=int, default=20, help="Additional completed poll iterations after the checkpoint.")
 	return parser
 
 def convert_Bounds_to_bounds(args):
@@ -154,7 +157,7 @@ def save_pattern_state_round(x,fval,poll_dirs,lb,ub,nit,nfev,step_size,tol,max_e
 	prefix = "my_pattern_state_round_"
 	iteration = nit
 	filename = f"{prefix}{iteration}.npz"
-	np.savez(
+	atomic_npz(
 		filename,
 		x=x,
 		hyperparams={
@@ -231,53 +234,61 @@ def pattern_search(
 	nfev = 1
 	nit = 0
 	history = [(nit, fval, step_size, x.copy())]
-	if not args.Pattern_continue:
+	message = "Iteration/evaluation limit reached"
+	if not getattr(args, "Pattern_continue", False):
 		fval = func(xx,args=args)
 		history = [(nit, fval, step_size, x.copy())]
-	if(args.Pattern_continue):
+	if getattr(args, "Pattern_continue", False):
 		continue_file = args.Pattern_continue_file
+		if not continue_file:
+			raise ValueError("--Pattern_continue requires --Pattern_continue_file")
+		if args.Pattern_continue_more_rounds < 0:
+			raise ValueError("Additional pattern iterations must be nonnegative")
 		x,fval,poll_dirs,lb,ub,nit,nfev,step_size,tol,max_evals,max_iter,history,expand,shrink = from_file(continue_file)
-	while step_size > tol and nfev < max_evals and nit < max_iter:
+		max_iter = nit + args.Pattern_continue_more_rounds
+		if x.shape != np.asarray(x0).shape:
+			raise ValueError("Checkpoint dimensions do not match --Pattern_dimensions")
+	with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+		while step_size > tol and nfev < max_evals and nit < max_iter:
 		
-		candidates = x + step_size * poll_dirs
-		candidates = _project_to_bounds(candidates, lb, ub)
+			candidates = x + step_size * poll_dirs
+			candidates = _project_to_bounds(candidates, lb, ub)
 
-		if gpuid_list is not None:
-			task_inputs = [(func,args, [candidates[i],gpuid_list[i % len(gpuid_list)]]) for i in range(len(candidates))]
-			print(f"candidates = {candidates}")
-			AA=open("Pattern_optimization_history.log","a")
-			AA.write(f"nit = {nit}, candidates = {candidates}")
-			AA.close()
-		else:
-			print("No gpuid. EXIT")
-			quit()
+			if gpuid_list is not None:
+				task_inputs = [(func,args, [candidates[i],gpuid_list[i % len(gpuid_list)]]) for i in range(len(candidates))]
+				print(f"candidates = {candidates}")
+				AA=open("Pattern_optimization_history.log","a")
+				AA.write(f"nit = {nit}, candidates = {candidates}")
+				AA.close()
+			else:
+				print("No gpuid. EXIT")
+				quit()
 
-		vals = np.empty(len(candidates))
+			vals = np.empty(len(candidates))
 		
-		with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
 			vals = list(executor.map(evaluate_wrapper, task_inputs))
-		nfev += 12
+			nfev += len(candidates)
 
-		best_idx = np.argmin(vals)
-		if vals[best_idx] < fval:
-			x = candidates[best_idx]
-			fval = vals[best_idx]
-			step_size *= expand
-			print (f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
-			AA=open("Pattern_optimization_history.log","a")
-			AA.write(f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
-			AA.close()
-			message = "Accepted better point"
-		else:
-			step_size *= shrink
-			message = "No improvement"
-			print (f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
-			AA=open("Pattern_optimization_history.log","a")
-			AA.write(f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
-			AA.close()
-		nit += 1
-		history.append((nit, fval, step_size, x.copy()))
-		save_pattern_state_round(x,fval,poll_dirs,lb,ub,nit,nfev,step_size,tol,max_evals,max_iter,history,expand,shrink)
+			best_idx = np.argmin(vals)
+			if vals[best_idx] < fval:
+				x = candidates[best_idx]
+				fval = vals[best_idx]
+				step_size *= expand
+				print (f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
+				AA=open("Pattern_optimization_history.log","a")
+				AA.write(f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
+				AA.close()
+				message = "Accepted better point"
+			else:
+				step_size *= shrink
+				message = "No improvement"
+				print (f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
+				AA=open("Pattern_optimization_history.log","a")
+				AA.write(f"Finish one iteraltion. Current best x = {x}, value = {fval}, stepsize = {step_size}")
+				AA.close()
+			nit += 1
+			history.append((nit, fval, step_size, x.copy()))
+			save_pattern_state_round(x,fval,poll_dirs,lb,ub,nit,nfev,step_size,tol,max_evals,max_iter,history,expand,shrink)
 	success = step_size <= tol
 	return PSResult(
 		x=x,
@@ -290,7 +301,7 @@ def pattern_search(
 		history=history,
 	)
 
-if __name__ == "__main__":
+def main():
 	# Instantiate PSO
 	parser = create_simplex_parser()
 	args = parser.parse_args()
@@ -336,16 +347,26 @@ if __name__ == "__main__":
 		for J in range(args.max_workers):
 			new_gpuid_list.append(gpuid_list[J%len(gpuid_list)])
 		gpuid_list = new_gpuid_list
-	result = pattern_search(
-		func=func_gpuid,
-		x0=x0,
-		step_size=args.Pattern_stepsize,
-		tol=args.Pattern_tol, # noise -> looser tol
-		max_iter=args.Pattern_max_iter,
-		shrink=args.Pattern_shrink, # slightly gentler shrinking
-		expand=args.Pattern_expand, # mild expansion
-		bounds=(lb, ub),
-		args=args,
-		gpuid_list=gpuid_list,
-		max_workers=args.max_workers,
-	)
+	try:
+		prepare_workers(args)
+		result = pattern_search(
+			func=func_gpuid,
+			x0=x0,
+			step_size=args.Pattern_stepsize,
+			tol=args.Pattern_tol, # noise -> looser tol
+			max_iter=args.Pattern_max_iter,
+			shrink=args.Pattern_shrink, # slightly gentler shrinking
+			expand=args.Pattern_expand, # mild expansion
+			bounds=(lb, ub),
+			args=args,
+			gpuid_list=gpuid_list,
+			max_workers=args.max_workers,
+		)
+		print("Pattern search result:", result)
+		finalize_run(args)
+	finally:
+		shutdown_workers(args)
+
+
+if __name__ == "__main__":
+	main()

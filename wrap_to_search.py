@@ -2,6 +2,8 @@ import os, sys
 import argparse
 import concurrent.futures
 import subprocess
+import shlex
+from pathlib import Path
 
 def create_SEARCH_parser():
 	parser = argparse.ArgumentParser(description="Read search params.")
@@ -37,27 +39,31 @@ def test_length(starfile_name):
 	a.close()
 	return length
 def generate_command(args,start,end,serial_number):
-	sh2_command_line ="python "+args.script+" --i "+args.i+" --p "+args.p+" --FSC "+ args.FSC+" --oriboxsize "+str(args.oriboxsize)+" --newboxsize "+str(args.newboxsize)+\
-	" --apix "+str(args.apix)+" --transRange "+str(args.transRange)+" --voltage "+str(args.voltage)+" --cs "+str(args.cs) \
-	+" --maskRadius "+str(args.maskRadius)+" --maskEdge "+str(args.maskEdge)+" --psiStep "+str(args.psiStep)+" --kk "+str(args.kk)
+	argv = [sys.executable, str(Path(args.script).resolve())]
+	for name in ("i", "p", "oriboxsize", "newboxsize", "apix", "transRange", "voltage", "cs", "maskRadius", "maskEdge", "psiStep", "kk"):
+		argv.extend(["--" + name, str(getattr(args, name))])
+	if args.FSC and args.FSC.strip():
+		argv.extend(["--FSC", args.FSC])
+	sh2_command_line = shlex.join(argv)
 	if(args.ignoreFSC):
 		sh2_command_line+=" --ignoreFSC "
 	if(args.discardMask):
 		sh2_command_line+=" --discardMask "
 	if(args.doSplitDiffGpu):
-		sh2_command_line+="--gpuid "+str(args.gpuid+serial_number)
+		sh2_command_line+=" --gpuid "+str(args.gpuid+serial_number)
 	else:
-		sh2_command_line+="--gpuid "+str(args.gpuid)
+		sh2_command_line+=" --gpuid "+str(args.gpuid)
 	if(args.doLocalSearch):
 		sh2_command_line+=" --doLocalSearch --localRange "+str(args.localRange)
 	sh2_command_line+=" --start "+str(start)+" --end "+str(end)
 	new_filename = args.o+"_tmp"+str(serial_number)
-	sh2_command_line+=" --o "+new_filename
+	sh2_command_line+=" --o "+shlex.quote(new_filename)
 #	print(sh2_command_line)
 	return sh2_command_line,new_filename
 	
 def run_command(command):
-	return subprocess.call(command, shell=True)	
+	subprocess.run(shlex.split(command), check=True)
+	return 0	
 	
 if __name__ == "__main__":
 	parser = create_SEARCH_parser()
@@ -72,7 +78,7 @@ if __name__ == "__main__":
 		command,new_filename = generate_command(args,start,end,i)
 		commands.append(command)
 		new_file.append(new_filename)
-	with concurrent.futures.ProcessPoolExecutor(max_workers=args.SplitParticles) as executor:
+	with concurrent.futures.ThreadPoolExecutor(max_workers=args.SplitParticles) as executor:
 		results = list(executor.map(run_command, commands))
 	
 	with open(args.o, 'w') as outfile:

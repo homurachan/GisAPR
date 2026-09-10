@@ -3,7 +3,8 @@ from scipy.optimize import minimize,Bounds
 import os,sys,argparse,math
 from functools import partial
 from scipy.spatial.transform import Rotation as R
-from func import func 
+from func import func_gpuid, prepare_workers, shutdown_workers, finalize_run
+from optimizer_checkpoint import checkpoint_nelder_mead
 # changelog ver4
 # search for rot-tilt-psi and X-Y-Z. Add bounds to the minimize.
 # changelog ver5
@@ -28,13 +29,14 @@ def create_simplex_parser():
 	parser.add_argument("--rotate_chain", type=str, required=True)
 	parser.add_argument("--output_name_root", type=str, default="output")
 	parser.add_argument("--gpuid", type=str, default="0")
-	parser.add_argument("--ang", type=str, default="/groups/kyouko/mydata/c1_3deg_remove_rotLzero_200kV.star")
+	parser.add_argument("--ang", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "c1_3deg_remove_rotLzero_200kV.star"))
 	parser.add_argument("--boxsize", type=int, default=256)
 	parser.add_argument("--apix", type=float, default=1.58)
 	parser.add_argument("--apix_PDB", type=float, default=1.58)
 	parser.add_argument("--newboxsize", type=int, default=160)
-	parser.add_argument("--search_script", type=str, default="/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6032.py")
-	parser.add_argument("--fsc_file", type=str, default="ribo_recons_masked_vs_7k00_masked.fsc")
+	parser.add_argument("--search_script", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "test1_with_isspa_weight_varingKK_search_translation_also_v606_torch_optimized_standalone.py"))
+	parser.add_argument("--fsc_file", type=str, default=None, help="Optional FSC curve; omit to use uniform Fourier weights.")
+	parser.add_argument("--skip_geometric_restraint", action="store_true", help="Skip geometric restraint calculation and its score penalty.")
 	parser.add_argument("--transRange", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=300.0)
 	parser.add_argument("--cs", type=float, default=2.7)
@@ -61,73 +63,11 @@ def create_simplex_parser():
 	parser.add_argument("--Simplex_fatol", type=float, default=1.0)
 	parser.add_argument("--Simplex_maxiter", type=int, default=100)
 #	parser.add_argument("--Initial_Simplex", type=str, default = "")
+	parser.add_argument("--Simplex_continue", "--continue_run", action="store_true")
+	parser.add_argument("--Simplex_continue_file", "--continue_file", type=str, default=None)
+	parser.add_argument("--Simplex_continue_more_rounds", "--continue_more_rounds", type=int, default=20)
 	return parser
 
-'''
-def DEG2RAD(x):
-	return(x/180.0*3.14159265359)
-def Euler_angles2matrix(alpha, beta, gamma):
-	alpha = DEG2RAD(alpha)
-	beta  = DEG2RAD(beta)
-	gamma = DEG2RAD(gamma)
-	ca =  math.cos(alpha)
-	cb =  math.cos(beta)
-	cg =  math.cos(gamma)
-	sa =  math.sin(alpha)
-	sb =  math.sin(beta)
-	sg =  math.sin(gamma)
-	cc =  cb * ca
-	cs =  cb * sa
-	sc =  sb * ca
-	ss =  sb * sa
-	A=[]
-	for i in range(0,3):
-		A.append([])
-		for j in range(0,3):
-			A[i].append([])
-	A[0][0] =  cg * cc - sg * sa
-	A[0][1] =  cg * cs + sg * ca
-	A[0][2] = -cg * sb
-	A[1][0] = -sg * cc - cg * sa
-	A[1][1] = -sg * cs + cg * ca
-	A[1][2] = sg * sb
-	A[2][0] =  sc
-	A[2][1] =  ss
-	A[2][2] = cb
-	return A
-
-def rotation_distance(x1, x2):
-	# assuming the x1 and x2 have 6 components.
-	
-	rotation_matrix1=np.asarray(Euler_angles2matrix(x1[0],x1[1], x1[2]))
-	rotation_matrix2=np.asarray(Euler_angles2matrix(x2[0],x2[1], x2[2]))
-	diff_in_matrix=rotation_matrix1*np.linalg.inv(rotation_matrix2)
-	r = R.from_matrix(x3)
-	angle = np.degrees(r.magnitude())
-	# angle in degree
-	return angle
-def translation_distance(x1, x2):
-	# assuming the x1 and x2 have 6 components.
-	trans_vector1=np.asarray((x1[3],x1[4], x1[5]))
-	trans_vector2=np.asarray((x2[3],x2[4], x2[5]))
-	distance = np.linalg.norm(trans_vector1-trans_vector2)
-	# angle in degree
-	return distance
-def nelder_mead_callback(simplex):
-	"""Custom callback to track the distance between simplex vertices."""
-	vertices = simplex
-	print(vertices)
-	max_rot_dist = max(rotation_distance(vertices[i], vertices[j]) 
-		for i in range(len(vertices)) 
-		for j in range(i + 1, len(vertices)))
-	print(f"Max geodesic distance in simplex: {max_rot_dist}")
-	max_trans_dist = max(translation_distance(vertices[i], vertices[j]) 
-		for i in range(len(vertices)) 
-		for j in range(i + 1, len(vertices)))
-	print(f"Max translation distance in simplex: {max_trans_dist}")
-	if max_rot_dist < 0.5 and max_trans_dist < 1.0:  # Adjust threshold as needed
-		return True  # Force termination
-'''
 def convert_Bounds_to_bounds(args):
 	string_bounds = args.Simplex_Bounds
 	dimensions = args.Simplex_dimensions
@@ -145,20 +85,21 @@ def convert_Bounds_to_bounds(args):
 		upper_bounds[i]=HIGH
 	BOUNDS=Bounds(lower_bounds, upper_bounds)
 	return bounds,BOUNDS
-def run_downhill_simplex(x0, func, BOUNDS, options):
-	print("Initial guess: ", options)
-	optimization_history = []
-	# Run the optimization
-#	result = minimize(func, x0, method='Nelder-Mead', callback=callback, options=options,bounds=BOUNDS)
-	result = minimize(func, x0, method='Nelder-Mead', options=options,bounds=BOUNDS)
+def run_downhill_simplex(x0, objective, BOUNDS, options, args=None):
+	resume_file = None
+	if args is not None and args.Simplex_continue:
+		if not args.Simplex_continue_file:
+			raise ValueError("--Simplex_continue requires --Simplex_continue_file")
+		resume_file = args.Simplex_continue_file
+	result = checkpoint_nelder_mead(objective, x0, BOUNDS, options,
+		resume_file=resume_file,
+		additional_iterations=getattr(args, "Simplex_continue_more_rounds", 20))
 	print("Optimal point:", result.x)
 	print("Function value at the optimal point:", result.fun)
-#	print("Optimization history:", optimization_history)
-#	AA=open("Simplex_optimization_history.log","a")
-#	AA.write(str(optimization_history))
-#	AA.close()
-# Run this.
-if __name__ == "__main__":
+	return result
+
+
+def main():
 	# Instantiate PSO
 	parser = create_simplex_parser()
 	args = parser.parse_args()
@@ -194,10 +135,27 @@ if __name__ == "__main__":
 	# Note: x0 would not be used if Initial_Simplex had been set.
 	# Note 2: BOUNDS is for the Bounds class. It's 6 by 2. While bounds is for array iteration. it's 2 by 6.
 	
-	func_partial = partial(func, args=args)
-	run_downhill_simplex(x0,func_partial,BOUNDS,options)
+	# Nelder--Mead evaluates sequentially; keep one permanent GPU worker
+	# available per requested device and dispatch successive evaluations round robin.
+	gpuids = args.gpuid.split(":")
+	evaluation_index = 0
+	def objective(pose):
+		nonlocal evaluation_index
+		gpu = gpuids[evaluation_index % len(gpuids)]
+		evaluation_index += 1
+		return func_gpuid((pose, gpu), args=args)
+	try:
+		prepare_workers(args)
+		run_downhill_simplex(x0, objective, BOUNDS, options, args=args)
+		finalize_run(args)
+	finally:
+		shutdown_workers(args)
 
 ####
 # Note: Is it possible to interpolate the values inside our search points?
 # So that we only need to compute the values outside. Therefore reduce computational cost.
 # Maybe only for large domains.
+
+
+if __name__ == "__main__":
+	main()

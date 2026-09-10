@@ -5,7 +5,7 @@ import itertools
 import concurrent.futures
 import pickle,argparse
 from functools import partial
-from func import func_gpuid
+from func import func_gpuid, prepare_workers, shutdown_workers, finalize_run
 # changelog ver2
 # do the Geometric search first, then read the results and do the GPU search.
 # changelog ver3
@@ -28,13 +28,14 @@ def create_gridsearch_parser():
 	parser.add_argument("--rotate_chain", type=str, required=True)
 	parser.add_argument("--output_name_root", type=str, default="output")
 	parser.add_argument("--gpuid", type=str, default="0")
-	parser.add_argument("--ang", type=str, default="/groups/kyouko/mydata/c1_3deg_remove_rotLzero_200kV.star")
+	parser.add_argument("--ang", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "c1_3deg_remove_rotLzero_200kV.star"))
 	parser.add_argument("--boxsize", type=int, default=256)
 	parser.add_argument("--apix", type=float, default=1.58)
 	parser.add_argument("--apix_PDB", type=float, default=1.58)
 	parser.add_argument("--newboxsize", type=int, default=160)
-	parser.add_argument("--search_script", type=str, default="/groups/kyouko/mydata/test1_with_isspa_weight_varingKK_search_translation_also_v6032.py")
-	parser.add_argument("--fsc_file", type=str, default="ribo_recons_masked_vs_7k00_masked.fsc")
+	parser.add_argument("--search_script", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "test1_with_isspa_weight_varingKK_search_translation_also_v606_torch_optimized_standalone.py"))
+	parser.add_argument("--fsc_file", type=str, default=None, help="Optional FSC curve; omit to use uniform Fourier weights.")
+	parser.add_argument("--skip_geometric_restraint", action="store_true", help="Skip geometric restraint calculation and its score penalty.")
 	parser.add_argument("--transRange", type=int, default=0)
 	parser.add_argument("--voltage", type=float, default=300.0)
 	parser.add_argument("--cs", type=float, default=2.7)
@@ -72,60 +73,6 @@ def convert_number_to_filename(number):
 		tmp="N"
 	output=tmp+str(integer_part)+"p"+str(dp)
 	return output
-####
-def func_geo(x, args):
-	PDB_NAME = args.PDB_NAME
-	STAR_NAME = args.STAR_NAME
-	rotate_chain = args.rotate_chain
-	output_name_root = args.output_name_root
-	gpuid = args.gpuid
-	ang = args.ang
-	boxsize = args.boxsize
-	apix = args.apix
-	newboxsize = args.newboxsize
-	search_script = args.search_script
-	fsc_file = args.fsc_file
-	transRange = args.transRange
-	voltage = args.voltage
-	cs = args.cs
-	psiStep = args.psiStep
-	kk = args.kk
-	do_local_search = args.do_local_search
-	local_stepsize = args.local_stepsize
-	do_ignoreFSC = args.do_ignoreFSC
-	maskRadius = args.maskRadius
-	Geometric_restrain_Scaling_Factor=args.Geometric_restrain_Scaling_Factor
-	chain_MASS_in_residues = args.chain_MASS_in_residues
-	MAXIUM_ALLOWED_overlapped_pixels = args.MAXIUM_ALLOWED_overlapped_pixels
-	MAX_MinDistance_Allowed = args.MAX_MinDistance_Allowed
-	yflip=args.yflip
-	rot=x[0]
-	tilt=x[1]
-	psi=x[2]
-	xshift=x[3]
-	yshift=x[4]
-	zshift=x[5]
-	score_in_this_conformation = 9999.
-	str_Rot=convert_number_to_filename(rot)
-	str_Tilt=convert_number_to_filename(tilt)
-	str_Psi=convert_number_to_filename(psi)
-	str_XSHIFT=convert_number_to_filename(xshift)
-	str_YSHIFT=convert_number_to_filename(yshift)
-	str_ZSHIFT=convert_number_to_filename(zshift)
-
-	# Step: 
-	# 0. Compute geometric restrain. If overlapped pixels are too many, skip all the rest computation.
-	Step0_Python_Name="python func_check_boundary_for_testing_v8.py "
-	Geometric_restrain_Result_filename = output_name_root+rotate_chain+"_rot"+str_Rot+"_tilt"+str_Tilt+"_psi"+str_Psi+"deg_trans"+str_XSHIFT+"_"+str_YSHIFT+"_"+str_ZSHIFT+"_GeometricRestrain_Result.txt"
-	To_Run_Command_Step0 = Step0_Python_Name+"--i "+PDB_NAME+" --chainID "+rotate_chain+" --rot "+str(rot)+" --tilt "+str(tilt)+" --psi "+str(psi)\
-	+" --centerX "+str(xshift)+" --centerY "+str(yshift)+" --centerZ "+str(zshift)+" --outputRoot "+output_name_root+" --outputFile "+Geometric_restrain_Result_filename+"\n"
-	os.system(To_Run_Command_Step0)
-	Geometric_restrain_Result_FILE = open(Geometric_restrain_Result_filename,"r")
-	Geometric_restrain_Result_FILE_lines=Geometric_restrain_Result_FILE.readlines()
-	Geometric_restrain_Overlapped_Pixels=float(Geometric_restrain_Result_FILE_lines[0].split()[7])
-	Min_Distance = float(Geometric_restrain_Result_FILE_lines[0].split()[8])
-	print("debug, Overlapped pixels, Min_Distance = ",Geometric_restrain_Overlapped_Pixels,Min_Distance)
-	return Geometric_restrain_Overlapped_Pixels,Min_Distance
 def generate_grid(bound, stepsize,dimensions):
 	""" Generate all grid points based on the given boundary and step sizes. """
 	grid_axes = [np.arange(bound[i, 0], bound[i, 1] + stepsize[i], stepsize[i]) for i in range(dimensions)]
@@ -149,61 +96,28 @@ def convert_Bounds_to_bounds_for_grid(args):
 		bounds[i,1]=HIGH
 	return bounds
 
-if __name__ == "__main__":
-	
+def main():
 	parser = create_gridsearch_parser()
 	args = parser.parse_args()
-	BOUNDS = convert_Bounds_to_bounds_for_grid(args)
-	rot_step_size=args.Grid_Rotation_Stepsize
-	shift_step_size=args.Grid_Translation_Stepsize
-	dimensions=args.Grid_dimensions
-	STEPSIZE = np.array([rot_step_size, rot_step_size, rot_step_size, shift_step_size, shift_step_size, shift_step_size])  # Step sizes for each dimension
-	positions = generate_grid(BOUNDS, STEPSIZE,dimensions)
-	FILE_LOG=open("GridSearch_GEO.log","a")
-	func_geo_partial = partial(func_geo, args=args)
-	with concurrent.futures.ProcessPoolExecutor(max_workers=args.max_workers_CPU) as executor:
-		results = list(executor.map(func_geo_partial, positions))
-		Geo_optimization_history.append([results, positions])
-		FILE_LOG.write(str(Geo_optimization_history))
-	FILE_LOG.close()
+	bounds = convert_Bounds_to_bounds_for_grid(args)
+	steps = np.array([args.Grid_Rotation_Stepsize] * 3 + [args.Grid_Translation_Stepsize] * 3)
+	positions = generate_grid(bounds, steps, args.Grid_dimensions)
+	gpuids = args.gpuid.split(":")
+	tasks = [(pose, gpuids[i % len(gpuids)]) for i, pose in enumerate(positions)]
+	# The permanent worker performs the geometric gate once per candidate,
+	# before density generation and image scoring, including grid searches.
+	try:
+		prepare_workers(args)
+		with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers_GPU) as executor:
+			results = list(executor.map(partial(func_gpuid, args=args), tasks))
+		with open("GridSearch_GPU.log", "a") as handle:
+			handle.write(str([[results, positions]]) + "\n")
+		with open("positions_and_results.pkl", "wb") as handle:
+			pickle.dump(list(zip(positions, results)), handle)
+		finalize_run(args)
+	finally:
+		shutdown_workers(args)
 
-	combined_data = [(pos, A, B) for pos, (A, B) in zip(positions, results)]
-	with open('positions_and_results.pkl', 'wb') as f:
-		pickle.dump(combined_data, f)
-	print(f"Saved {len(combined_data)} positions and results to 'positions_and_results.pkl'.")
 
-	filtered_positions = [pos for pos, (Geo_score, Geo_Mindist) in zip(positions, results) if Geo_score < args.MAXIUM_ALLOWED_overlapped_pixels and Geo_Mindist < args.MAX_MinDistance_Allowed]
-	with open('filtered_positions.pkl', 'wb') as f:
-		pickle.dump(filtered_positions, f)
-	print(f"Filtered data saved to 'filtered_positions.pkl'.")
-	# Ensure there are positions to process
-	if filtered_positions:
-		filtered_positions = np.array(filtered_positions)
-		new_grid = remake_grid(filtered_positions,dimensions)
-		print(f"Original grid size: {len(positions)}")
-		print(f"Filtered positions: {len(filtered_positions)}")
-		print(f"New grid size: {len(new_grid)}")
-
-		# Display the first 5 new grid positions
-		for pos in new_grid:
-			print(f"New Grid Position: {pos}")
-	else:
-		print("No positions met the threshold criteria.")
-
-	FILE_LOG2=open("GridSearch_GPU.log","a")
-	for pos in range(len(new_grid)):
-		FILE_LOG2.write(str(new_grid[pos]))
-	gpuid = args.gpuid
-	gpuid_list = [str(x) for x in gpuid.split(":")]
-	if(len(gpuid_list)<len(new_grid)):
-		new_gpuid_list = []
-		for J in range(len(new_grid)):
-			new_gpuid_list.append(gpuid_list[J%len(gpuid_list)])
-		gpuid_list = new_gpuid_list
-	args_list = zip(new_grid, gpuid_list)
-	func_partial = partial(func_gpuid, args=args)
-	with concurrent.futures.ProcessPoolExecutor(max_workers=args.max_workers_GPU) as executor2:
-		results_search = list(executor2.map(func_partial, args_list))
-		optimization_history.append([results_search, args_list])
-		FILE_LOG2.write(str(optimization_history))
-	FILE_LOG2.close()
+if __name__ == "__main__":
+	main()
