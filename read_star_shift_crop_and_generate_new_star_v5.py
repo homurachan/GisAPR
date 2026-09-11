@@ -161,69 +161,94 @@ if __name__ == "__main__":
 
 	# Prepare new STAR file data
 	new_image_names = []
+	valid_indices = [] 
 	batch_index = 1
 	batch_images = []
 	h = -1
 	w = -1
 	whitening = args.dowhitening
+	def save_current_batch():
+		global batch_images, batch_index
+		if len(batch_images) == 0:
+			return
+		new_mrc_filename = f"{output_root_name}{batch_index:04d}.mrcs"
+		cropped_stack = np.array(batch_images, dtype=np.float32)
+		with mrcfile.new(new_mrc_filename, overwrite=True) as new_mrc:
+			new_mrc.set_data(cropped_stack)
+		print(f"Saved {new_mrc_filename} with {len(batch_images)} images.")
+		batch_images = []
+		batch_index += 1
+
 	if(not doOnlyMakeStar):
 		for i, image_name in enumerate(image_names):
-			# Extract the MRC file name and particle index
-			index, mrc_filename = image_name.split('@')
-			index = int(index) - 1  # RELION indices start from 1
+			try:
+				# Extract the MRC file name and particle index
+				index, mrc_filename = image_name.split('@')
+				index = int(index) - 1  # RELION indices start from 1
 
-			# Open the corresponding MRC file
-			with mrcfile.mmap(mrc_filename, mode='r') as mrc:
-				image = mrc.data[index]
+				# Open the corresponding MRC file
+				with mrcfile.mmap(mrc_filename, mode='r') as mrc:
+					image = np.asarray(mrc.data[index])
 
-			# Get image dimensions
-			if(h<0 and w < 0):
-				h, w = image.shape
-			if(not doSkipShifting):
-				shifted_image = np.zeros_like(image)
+				# Skip empty or invalid images
+				if image is None or image.size == 0 or image.ndim != 2:
+					print(f"Skip bad image: {image_name}, shape={getattr(image, 'shape', None)}")
+					continue
 
-				# Compute valid region after shifting
-				shift_x, shift_y = origin_x_pixels[i], origin_y_pixels[i]
+				# Get image dimensions from the first valid image
+				if(h < 0 and w < 0):
+					h, w = image.shape
 
-				shifted_image = translation_twoD_image(image,shift_x,shift_y)
-				cropped_image = shifted_image
-				if(crop_size>0):
-					# Crop the image
-					center_x, center_y = w // 2, h // 2
-					cropped_image = shifted_image[
-						center_y - crop_size // 2 : center_y + crop_size // 2,
-						center_x - crop_size // 2 : center_x + crop_size // 2,
-					]
-			else:
-				cropped_image = image
-				if(crop_size>0):
-					# Crop the image
-					center_x, center_y = w // 2, h // 2
-					cropped_image = shifted_image[
-						center_y - crop_size // 2 : center_y + crop_size // 2,
-						center_x - crop_size // 2 : center_x + crop_size // 2,
-					]
-			if(whitening):
-				img_IFT = getSpectrum_divideBySpectrum(cropped_image)
-				cropped_image = normalize(img_IFT)
-			if(dohighpass):
-				tmp_img = highpassfilter(cropped_image, highpassFreq, pixel_size)
-				cropped_image = tmp_img
-			batch_images.append(cropped_image)
-			new_mrc_filename = f"{output_root_name}{batch_index:04d}.mrcs"
-			new_image_names.append(f"{len(batch_images)}@{new_mrc_filename}")
+				if(not doSkipShifting):
+					# Compute valid region after shifting
+					shift_x, shift_y = origin_x_pixels[i], origin_y_pixels[i]
+					shifted_image = translation_twoD_image(image, shift_x, shift_y)
+					cropped_image = shifted_image
+					if(crop_size > 0):
+						# Crop the image
+						center_x, center_y = w // 2, h // 2
+						cropped_image = shifted_image[
+							center_y - crop_size // 2 : center_y + crop_size // 2,
+							center_x - crop_size // 2 : center_x + crop_size // 2,
+						]
+				else:
+					cropped_image = image
+					if(crop_size > 0):
+						# Crop the image
+						center_x, center_y = w // 2, h // 2
+						cropped_image = image[
+							center_y - crop_size // 2 : center_y + crop_size // 2,
+							center_x - crop_size // 2 : center_x + crop_size // 2,
+						]
 
-			# Save when batch reaches batch_size or last image
-			if len(batch_images) == batch_size or i == len(image_names) - 1:
-				cropped_stack = np.array(batch_images, dtype=np.float32)
+				# Skip empty crop results. This can happen if crop_size is larger than the image,
+				# or if the crop window is outside the available array.
+				if cropped_image is None or cropped_image.size == 0 or cropped_image.ndim != 2:
+					print(f"Skip empty cropped image: {image_name}, shape={getattr(cropped_image, 'shape', None)}")
+					continue
 
-				with mrcfile.new(new_mrc_filename, overwrite=True) as new_mrc:
-					new_mrc.set_data(cropped_stack)
+				if(whitening):
+					img_IFT = getSpectrum_divideBySpectrum(cropped_image)
+					cropped_image = normalize(img_IFT)
+				if(dohighpass):
+					tmp_img = highpassfilter(cropped_image, highpassFreq, pixel_size)
+					cropped_image = tmp_img
 
-				print(f"Saved {new_mrc_filename} with {len(batch_images)} images.")
+				batch_images.append(cropped_image)
+				new_mrc_filename = f"{output_root_name}{batch_index:04d}.mrcs"
+				new_image_names.append(f"{len(batch_images)}@{new_mrc_filename}")
+				valid_indices.append(i)
 
-				batch_images = []  # Reset batch list
-				batch_index += 1  # Increment batch index
+				# Save when batch reaches batch_size. The remaining images are saved after the loop.
+				if len(batch_images) == batch_size:
+					save_current_batch()
+
+			except Exception as e:
+				print(f"Skip failed image: {image_name}, error: {e}")
+				continue
+
+		# Save the final incomplete batch, even if the last input image failed.
+		save_current_batch()
 	else:
 		for i, image_name in enumerate(image_names):
 			batch_images.append(i)
@@ -234,6 +259,10 @@ if __name__ == "__main__":
 				batch_index += 1  # Increment batch index
 	# Create a new .star file with updated entries
 	new_star_data = star_data.copy()
+	if(not doOnlyMakeStar):
+		new_star_data["particles"] = star_data["particles"].iloc[valid_indices].copy()
+	else:
+		new_star_data["particles"] = star_data["particles"].copy()
 	new_star_data["particles"]["rlnImageName"] = new_image_names
 	if(not doSkipShifting):
 		new_star_data["particles"]["rlnOriginXAngst"] = 0.0
