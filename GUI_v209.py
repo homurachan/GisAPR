@@ -229,11 +229,11 @@ def build_once_command(*args, **kwargs):
 class MyApp(tk.Tk):
 	def __init__(self):
 		super().__init__()
-		self.title("GisAPR        Author: Dongjie 'Homurachan' Zhu")
-		self.geometry("800x600")
+		self.title("GisAPR        Author: Dongjie 'Homurachan' Zhu, ChatGPT 4o to latest")
+		self.geometry("800x720")
 
 		# Title region with image
-		self.title_frame = tk.Frame(self, height=100, bg="gray")
+		self.title_frame = tk.Frame(self, height=150, bg="white")
 		self.title_frame.pack(side="top", fill="x")
 		self.load_title_image()
 
@@ -303,9 +303,9 @@ class MyApp(tk.Tk):
 		try:
 			from PIL import Image, ImageTk
 			image = Image.open(PROGRAM_ROOT / "title.png")
-			image = image.resize((600, 100), Image.LANCZOS)
+			image = image.resize((600, 150), Image.LANCZOS)
 			self.photo = ImageTk.PhotoImage(image)
-			label = tk.Label(self.title_frame, image=self.photo, bg="gray")
+			label = tk.Label(self.title_frame, image=self.photo, bg="white")
 			label.pack()
 		except Exception as e:
 			label = tk.Label(self.title_frame, text="Title Image Not Found", font=("Arial", 18), bg="gray", fg="white")
