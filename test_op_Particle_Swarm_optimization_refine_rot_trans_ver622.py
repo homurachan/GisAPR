@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.optimize import minimize
 import os, sys
+from gisapr_runtime import worker_slots
 import argparse
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -8,12 +9,61 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.compose import TransformedTargetRegressor
 import concurrent.futures
 from functools import partial
+from builtins import print as _builtin_print
+import time
 from func import func_gpuid, prepare_workers, shutdown_workers, finalize_run
 import joblib
 import glob
 import json
 import ast
 from optimizer_checkpoint import atomic_npz
+
+# This module's controller output must remain visible when redirected to a
+# file (including SLURM logs). Worker startup already flushes its own output.
+# Keep this local to PSO; do not replace sys.stdout or builtins.print globally.
+print = partial(_builtin_print, flush=True)
+
+
+def evaluate_swarm(executor, objective, jobs, iteration, progress_interval=60.0):
+	"""Report real completions while retaining the original particle/score order."""
+	jobs = list(jobs)
+	started = time.monotonic()
+	print(f"[PSO] Iteration {iteration}: evaluating {len(jobs)} candidates.")
+	futures = {executor.submit(objective, job): index for index, job in enumerate(jobs)}
+	pending = set(futures)
+	scores = [None] * len(jobs)
+	completed = 0
+	next_report = started + progress_interval
+	try:
+		while pending:
+			done, pending = concurrent.futures.wait(
+				pending, timeout=max(0.0, next_report - time.monotonic()),
+				return_when=concurrent.futures.FIRST_COMPLETED)
+			for future in sorted(done, key=futures.get):
+				index = futures[future]
+				try:
+					scores[index] = future.result()
+				except Exception as error:
+					print(f"[PSO] Iteration {iteration}: candidate {index + 1}/{len(jobs)} "
+						  f"FAILED on worker {jobs[index][1]}: {type(error).__name__}: {error}")
+					raise
+				completed += 1
+				print(f"[PSO] Iteration {iteration}: candidate {index + 1}/{len(jobs)} "
+					  f"complete on worker {jobs[index][1]}; objective={scores[index]:.8g}; "
+					  f"completed={completed}/{len(jobs)}; elapsed={time.monotonic() - started:.1f}s")
+			if pending and time.monotonic() >= next_report:
+				waiting = ', '.join(str(futures[future] + 1) for future in sorted(pending, key=futures.get))
+				print(f"[PSO] Iteration {iteration}: waiting for candidate(s) {waiting}; "
+					  f"completed={completed}/{len(jobs)}; elapsed={time.monotonic() - started:.1f}s "
+					  "(queued or evaluating; this is not GPU progress).")
+				next_report = time.monotonic() + progress_interval
+	except BaseException:
+		# Running requests still finish under the executor's normal cleanup.
+		for future in futures:
+			future.cancel()
+		raise
+	return scores
+
 # changelog ver32
 # add geometric restrain as bias to final values.
 # changelog ver33
@@ -116,7 +166,8 @@ def create_PSO_parser():
 	parser.add_argument("--PSO_surrogate_hidden", type=str, default="128,128,64", help="Hidden layer sizes for surrogate MLP, e.g. 128,128,64")
 	parser.add_argument("--PSO_surrogate_random_state", type=int, default=0)
 	parser.add_argument("--PSO_SKIP_surrogate_THRESHOLD", type=float, default=1.0)
-	return parser
+	from gisapr_options import add_runtime_options
+	return add_runtime_options(parser)
 
 class PSO:
 	def __init__(self, objective_func, args, bounds, callback=None):
@@ -139,7 +190,7 @@ class PSO:
 		#############
 		#
 		self.gpuid = args.gpuid
-		self.gpuid_list = [str(x) for x in self.gpuid.split(":")]
+		self.gpuid_list = worker_slots(self.gpuid)
 		if(len(self.gpuid_list)<self.num_particles):
 			new_gpuid_list = []
 			for J in range(self.num_particles):
@@ -444,6 +495,7 @@ class PSO:
 
 		with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
 			for iteration in range(n):
+				round_start = time.monotonic()
 				GO_SKIP_surrogate = False
 				actual_iter = self.current_iteration
 				w = self.compute_inertia_weight(actual_iter, self.max_iterations)
@@ -455,7 +507,7 @@ class PSO:
 				# --------------------------------------------------
 				args_list = zip(self.positions, self.gpuid_list)
 				func_partial = partial(self.obj_func, args=self.args)
-				scores = list(executor.map(func_partial, args_list))
+				scores = evaluate_swarm(executor, func_partial, args_list, actual_iter + 1)
 
 				scores = np.array(scores, dtype=np.float64)
 				print("PSO debug, scores, positions = ", scores, self.positions)
@@ -574,6 +626,8 @@ class PSO:
 				self.current_iteration += 1
 				self.sigma *= self.noise_decay_per_round
 				save_pso_state_round(self, self.current_iteration, prefix="my_pso_state_round_")
+				print(f"[PSO] Iteration {self.current_iteration} complete; "
+					  f"best objective={self.gbest_score:.8g}; wall={time.monotonic() - round_start:.1f}s")
 
 		print(f"Finished {n} more iterations (total so far: {self.current_iteration}).")
 		AA = open("PSO_optimization_history.log", "a")
