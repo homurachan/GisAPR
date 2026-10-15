@@ -121,6 +121,8 @@ def _evaluate(pose, gpuid, args, rotated):
     if len(lines) < 2:
         raise RuntimeError(f'Incomplete score result: {result}')
     value = float(lines[1].split()[0])
+    if math.isnan(value):
+        value = 0.0
     if not math.isfinite(value):
         raise RuntimeError(f'Nonfinite score in {result}: {value}')
     return -value

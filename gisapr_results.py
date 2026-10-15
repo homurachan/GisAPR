@@ -20,6 +20,8 @@ def read_scores(path):
             score = float(lines[i + 1].split()[0])
         except (IndexError, ValueError) as exc:
             raise ValueError(f'Invalid score at line {i + 2} in {path}') from exc
+        if math.isnan(score):
+            score = 0.0
         if not name or not math.isfinite(score):
             raise ValueError(f'Invalid result record in {path} at line {i + 1}')
         yield name, score
