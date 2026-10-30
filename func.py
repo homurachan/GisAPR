@@ -23,11 +23,10 @@ _path_locks_guard = threading.Lock()
 
 
 def convert_number_to_filename(number, decimals=1):
-    # Keep v209 filename encoding, including its historical rounding behavior.
     number = float(number)
-    integer = int(abs(number))
-    fraction = f'{abs(number - integer):.{decimals}f}'.split('.')[1]
-    return ('N' if number < 0 else '') + str(integer) + 'p' + fraction
+    sign = 'N' if number < 0 else ''
+    magnitude = f'{abs(number):.{decimals}f}'
+    return sign + magnitude.replace('.', 'p')
 
 
 def pose_token(pose):
